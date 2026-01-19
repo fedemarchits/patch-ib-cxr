@@ -1,0 +1,12 @@
+torch>=2.0.0
+torchvision
+open_clip_torch
+transformers
+pyyaml
+tqdm
+numpy
+scikit-learn
+einops
+wandb
+datasets
+pyarrow

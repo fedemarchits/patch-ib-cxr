@@ -1,0 +1,34 @@
+experiment_name: "model_a_baseline_biomedclip"
+
+data:
+  # The path you provided
+  json_path: "/datasets/MIMIC-CXR/mimicxr_parsed_ds.jsonl"
+  # ⚠️ IMPORTANT: Ask the tutor/prof where the actual IMAGE folders are.
+  # I am guessing a standard path here, but you MUST verify this.
+  image_root: "/datasets/MIMIC-CXR/files"
+  batch_size: 64
+  num_workers: 4 # Slurm usually gives you CPUs, 4 is safe
+  image_size: 224
+
+model:
+  vision_backbone: "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
+  text_backbone: "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
+  mask_ratio: 0.5
+  temperature: 0.1
+  use_masking: false
+  use_sparsity_loss: false
+
+training:
+  epochs: 20
+  lr: 1.0e-4
+  weight_decay: 0.01
+  warmup_steps: 500
+  print_freq: 50 # Print less often on cluster logs
+  device: "cuda"
+  use_amp: true
+
+wandb:
+  enable: true
+  project: "Thesis-PatchIB"
+  entity: "your_username"
+  run_name: "model-a-baseline"

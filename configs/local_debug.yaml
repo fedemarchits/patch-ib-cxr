@@ -1,0 +1,26 @@
+experiment_name: "local_debug"
+
+data:
+  json_path: "debug/mock_dataset.jsonl"
+  image_root: "debug/images"
+  batch_size: 2 # Small batch size for local debugging
+  num_workers: 0 # Use 0 workers for easier debugging
+  image_size: 224
+
+model:
+  vision_backbone: "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
+  text_backbone: "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
+  mask_ratio: 0.5
+  temperature: 0.1
+
+training:
+  epochs: 2
+  lr: 1.0e-4
+  weight_decay: 0.01
+  warmup_steps: 1
+  print_freq: 1
+  device: "cpu" # Use CPU for local debugging
+  use_amp: false
+
+wandb:
+  enable: false
