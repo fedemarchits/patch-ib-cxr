@@ -1,16 +1,32 @@
-# Use a base image with PyTorch and CUDA pre-installed.
-# This version matches the server requirements (usually Linux/x86).
-FROM pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime
+FROM nvidia/cuda:12.2.0-devel-ubuntu22.04
+LABEL maintainer="diiulio-MoroThesis"
 
-# Set the working directory inside the container
-WORKDIR /app
+# Zero interaction
+ENV DEBIAN_FRONTEND=noninteractive
 
-# Install system utilities (git is needed to clone your repo later)
-RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
+# Set work directory
+WORKDIR /workspace
+ENV APP_PATH=/workspace
 
-# Install Python libraries
-# We add --no-cache-dir to keep the image small
+# Install general-purpose dependencies 
+RUN apt-get update -y && \
+    apt-get install -y curl git bash nano python3.11 python3-pip && \
+    apt-get autoremove -y && \
+    apt-get clean -y && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN pip install --upgrade pip
+RUN pip install wrapt --upgrade --ignore-installed
+RUN pip install gdown
+
+# Copy requirements from the root (we will run build from project root)
+COPY requirements.txt .
+
+# Install your project dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Install flash-attn (optional but recommended in guide)
+RUN VLLM_FLASH_ATTN_VERSION=2 MAX_JOBS=16 pip install flash-attn --no-build-isolation
 
-# TO RUN LATER: docker push fedemarchits/thesis-env:latest
+# Back to default frontend
+ENV DEBIAN_FRONTEND=dialog
