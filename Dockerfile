@@ -1,5 +1,5 @@
 FROM nvidia/cuda:12.2.0-devel-ubuntu22.04
-LABEL maintainer="diiulio-MoroThesis"
+LABEL maintainer="marchi"
 
 # Zero interaction
 ENV DEBIAN_FRONTEND=noninteractive
