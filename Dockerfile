@@ -26,7 +26,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Install flash-attn (optional but recommended in guide)
-RUN VLLM_FLASH_ATTN_VERSION=2 MAX_JOBS=16 pip install flash-attn --no-build-isolation
+#RUN VLLM_FLASH_ATTN_VERSION=2 MAX_JOBS=16 pip install flash-attn --no-build-isolation
 
 # Back to default frontend
 ENV DEBIAN_FRONTEND=dialog

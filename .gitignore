@@ -28,7 +28,6 @@ debug/
 *.hf.co/
 *.physionet.org/
 .cache/
-/data/ 
 
 # Logs & Checkpoints
 logs/

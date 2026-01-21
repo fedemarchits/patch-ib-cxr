@@ -7,4 +7,4 @@
 # 2. Run the code
 # $1 is the config file passed from run_docker.sh
 echo "Running Training inside Docker..."
-python main.py --config configs/${1}
+python train.py --config configs/${1}
