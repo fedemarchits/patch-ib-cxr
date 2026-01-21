@@ -19,12 +19,22 @@ def main():
     parser.add_argument("--config", type=str, default="configs/model_a_baseline.yaml",
                         help="Path to the configuration file.")
     parser.add_argument("--output_dir", type=str, default="logs", help="Where to save checkpoints")
+    parser.add_argument("--dry_run", action="store_true", help="Run 1 batch on CPU to test pipeline") # For DEBUGGING
     args = parser.parse_args()
 
     # 1. Load Config & Setup
     cfg = get_config(args.config)
     os.makedirs(args.output_dir, exist_ok=True)
-    
+
+
+    ######## DEBUG CODE ########
+    if args.dry_run:
+        print("⚠️  DRY RUN MODE: CPU + 1 Batch + WandB Check")
+        cfg['training']['device'] = 'cpu'
+        cfg['training']['use_amp'] = False
+        cfg['data']['batch_size'] = 2
+    ######## END DEBUG CODE ########
+
     # WandB Initialization
     wandb_cfg = cfg.get('wandb', {})
     if wandb_cfg.get('enable', False):
@@ -66,6 +76,28 @@ def main():
         
         # GradScaler for mixed precision
         scaler = torch.amp.GradScaler(device, enabled=use_amp)
+
+        ######## DEBUG CODE ########
+        if args.dry_run:
+            print("   >> [Dry Run] Fetching 1 batch...")
+            batch = next(iter(train_loader))
+            images, text = batch[0].to(cfg['training']['device']), batch[1].to(cfg['training']['device'])
+            
+            print("   >> [Dry Run] Forward Pass...")
+            img_emb, txt_emb, logits = model(images, text) 
+            
+            print("   >> [Dry Run] Backward Pass...")
+            loss = criterions['contrastive'](img_emb, txt_emb, model.logit_scale)
+            loss.backward()
+            
+            if wandb_run:
+                print("   >> [Dry Run] Logging to WandB...")
+                wandb_run.log({"dry_run_test": 1.0})
+                wandb.finish()
+                
+            print("\n✅ DOCKER PIPELINE VERIFIED! Ready to submit.")
+            return
+        ######## DEBUG CODE ########
 
         # 5. Training Loop
         print("Starting Training...")

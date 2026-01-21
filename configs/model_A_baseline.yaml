@@ -6,7 +6,7 @@ data:
   # ⚠️ IMPORTANT: Ask the tutor/prof where the actual IMAGE folders are.
   # I am guessing a standard path here, but you MUST verify this.
   image_root: "/datasets/MIMIC-CXR/files"
-  batch_size: 64
+  batch_size: 32
   num_workers: 4 # Slurm usually gives you CPUs, 4 is safe
   image_size: 224
 

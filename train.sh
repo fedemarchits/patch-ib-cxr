@@ -1,10 +1,12 @@
 #!/bin/bash
 # train.sh
 
-# 1. Login to WandB (Optional: pass key as env var)
-# wandb login $WANDB_API_KEY 
+# $1: Config file name (e.g., model_A_baseline.yaml)
+# $2: Optional flags (e.g., --dry_run)
 
-# 2. Run the code
-# $1 is the config file passed from run_docker.sh
 echo "Running Training inside Docker..."
-python train.py --config configs/${1}
+echo "Config: configs/${1}"
+echo "Flags: ${2}"
+
+# Pass the second argument ($2) to the python script
+python train.py --config configs/${1} ${2}
