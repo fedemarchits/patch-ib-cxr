@@ -1,7 +1,7 @@
 import torch
 from tqdm import tqdm
 
-def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scaler, use_amp, wandb_run=None, log_every_n_steps=20):
+def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scaler, use_amp, wandb_run=None, log_every_n_steps=20, scheduler=None):
     model.train()
     total_loss = 0
     num_batches = 0
@@ -32,6 +32,10 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
         scaler.scale(loss).backward()
         scaler.step(optimizer)
         scaler.update()
+
+        # Step the scheduler after each batch (not epoch)
+        if scheduler is not None:
+            scheduler.step()
 
         total_loss += loss.item()
         loop.set_postfix(loss=loss.item())

@@ -3,7 +3,9 @@ import torch
 import argparse
 import wandb
 import os
+import math
 from torch.cuda.amp import GradScaler
+from torch.optim.lr_scheduler import LambdaLR
 
 from models.full_model import ModelABaseline
 from models.losses import ContrastiveLoss, SparsityLoss
@@ -15,6 +17,18 @@ from engine.validator import validate
 def get_config(config_path):
     with open(config_path, "r") as f:
         return yaml.safe_load(f)
+
+def get_cosine_schedule_with_warmup(optimizer, num_warmup_steps, num_training_steps):
+    """
+    Linear warmup followed by cosine decay to 0.
+    """
+    def lr_lambda(current_step):
+        if current_step < num_warmup_steps:
+            return float(current_step) / float(max(1, num_warmup_steps))
+        progress = float(current_step - num_warmup_steps) / float(max(1, num_training_steps - num_warmup_steps))
+        return max(0.0, 0.5 * (1.0 + math.cos(math.pi * progress)))
+
+    return LambdaLR(optimizer, lr_lambda)
 
 def main():
     parser = argparse.ArgumentParser(description="Main training script")
@@ -57,7 +71,7 @@ def main():
 
         # 2. Data Loading (THE NEW WAY)
         # This one line replaces your old 20 lines of dataset setup
-        train_loader, val_loader, test_loader = create_dataloaders(cfg)
+        train_loader, val_loader, _ = create_dataloaders(cfg)
         print(f"Data Loaded: {len(train_loader)} train batches, {len(val_loader)} val batches.")
 
         # 3. Model
@@ -67,7 +81,11 @@ def main():
             wandb.watch(model, log='all', log_freq=500)
 
         # 4. Optimization
-        optimizer = torch.optim.AdamW(model.parameters(), lr=float(cfg['training']['lr']))
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=float(cfg['training']['lr']),
+            weight_decay=float(cfg['training'].get('weight_decay', 0.01))
+        )
         
         # Losses
         # Make sure these classes exist in your src/models/ directory
@@ -78,6 +96,12 @@ def main():
         
         # GradScaler for mixed precision
         scaler = torch.amp.GradScaler(device, enabled=use_amp)
+
+        # Learning rate scheduler with warmup
+        num_training_steps = len(train_loader) * cfg['training']['epochs']
+        num_warmup_steps = cfg['training'].get('warmup_steps', 500)
+        scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps, num_training_steps)
+        print(f"Scheduler: {num_warmup_steps} warmup steps, {num_training_steps} total steps")
 
         ######## DEBUG CODE ########
         if args.dry_run:
@@ -103,7 +127,9 @@ def main():
 
             loss = criterions['contrastive'](img_emb, txt_emb, model.logit_scale)
             print(f"   >> [Dry Run] Success! Loss value: {loss.item():.4f}")
-            return
+            train_loader = [b for i, b in enumerate(train_loader) if i < 2]
+            val_loader = [b for i, b in enumerate(val_loader) if i < 2]
+            #test_loader = [b for i, b in enumerate(test_loader) if i < 2]
         ######## DEBUG CODE ########
 
         # 5. Training Loop
@@ -118,7 +144,7 @@ def main():
         
         for epoch in range(cfg['training']['epochs']):
             # Train
-            avg_train_loss = train_one_epoch(model, train_loader, optimizer, criterions, device, epoch, scaler, use_amp, wandb_run)
+            avg_train_loss = train_one_epoch(model, train_loader, optimizer, criterions, device, epoch, scaler, use_amp, wandb_run, scheduler=scheduler)
             print(f"Epoch {epoch} Train Loss: {avg_train_loss}") 
             
             # (Optional) Validation Loop could go here
@@ -143,6 +169,7 @@ def main():
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
                 'train_loss': avg_train_loss,
                 "val_loss": val_loss
             }, ckpt_path)
