@@ -3,6 +3,7 @@ import json
 import torch
 import open_clip
 import datasets
+import random
 from torch.utils.data import Dataset
 from PIL import Image
 from torch.utils.data import DataLoader
@@ -60,7 +61,8 @@ class MedicalImageTextDataset(Dataset):
                 image_files = [f for f in os.listdir(dir_path) if f.endswith('.jpg')]
                 if image_files:
                     # Pick the first image found
-                    img_path = os.path.join(dir_path, image_files[0])
+                    img_name = random.choice(image_files)
+                    img_path = os.path.join(dir_path, img_name)
             
             if img_path is None:
                 raise FileNotFoundError
