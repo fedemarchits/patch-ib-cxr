@@ -37,45 +37,49 @@ class MedicalImageTextDataset(Dataset):
     def __getitem__(self, idx):
         entry = self.data[idx]
         
-        # 1. Parse Text (Query)
-        # The query is "keyword|keyword|keyword". We replace pipes with spaces.
-        # Check if 'query' exists, otherwise use a placeholder
+        # 1. Parse Text
         raw_text = entry.get('query', '')
         caption = raw_text.replace('|', ' ')
         
-        # 2. Construct Image Path
-        # MIMIC-CXR structure is usually: p{subject_id[:2]}/p{subject_id}/s{study_id}.jpg
-        # WARNING: You must verify if the images on the server are .jpg or .dcm
-        # and if they follow the standard folder structure.
+        # 2. Construct Study Directory Path
         subj_id = str(entry['subject_id'])
         study_id = str(entry['study_id'])
         
-        # Folder pXX (first two digits of subject_id)
         p_folder = f"p{subj_id[:2]}"
-        # Folder pXXXXXXX
         subj_folder = f"p{subj_id}"
+        study_folder = f"s{study_id}"
         
-        # Construct path. Assuming standard MIMIC-CXR JPG layout:
-        # If the server has a flat structure, change this line!
-        img_filename = f"s{study_id}.jpg" 
-        img_path = os.path.join(self.image_root, p_folder, subj_folder, img_filename)
+        # Path to the folder containing the images for this study
+        dir_path = os.path.join(self.image_root, p_folder, subj_folder, study_folder)
 
-        # 3. Load Image
+        # 3. Dynamically Find the Image Filename
+        img_path = None
         try:
+            if os.path.exists(dir_path):
+                # List all jpg files in the study folder
+                image_files = [f for f in os.listdir(dir_path) if f.endswith('.jpg')]
+                if image_files:
+                    # Pick the first image found
+                    img_path = os.path.join(dir_path, image_files[0])
+            
+            if img_path is None:
+                raise FileNotFoundError
+                
             image = Image.open(img_path).convert('RGB')
-        except FileNotFoundError:
-            # Fallback for debugging if paths are wrong
-            print(f"MISSING IMAGE: {img_path}")
-            # Return a black image to prevent crash during debugging
+            
+        except (FileNotFoundError, IndexError, OSError):
+            # Fallback for missing files or empty folders
+            if img_path:
+                print(f"FAILED TO OPEN: {img_path}")
+            else:
+                print(f"NO IMAGES FOUND IN: {dir_path}")
             image = Image.new('RGB', (224, 224), (0, 0, 0))
 
+        # 4. Transform, Tokenize, and Labels
         if self.transform:
             image = self.transform(image)
             
-        # 4. Tokenize
         text = self.tokenizer(caption).squeeze(0)
-
-        # 5. Labels (if available in the JSONL)
         labels = torch.tensor(entry.get('labels', [0]*14))
 
         return image, text, labels
