@@ -30,5 +30,4 @@ training:
 wandb:
   enable: true
   project: "Thesis-PatchIB"
-  entity: "fedemarchits"
   run_name: "model-a-baseline"
