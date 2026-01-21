@@ -65,17 +65,12 @@ class MedicalImageTextDataset(Dataset):
                     img_path = os.path.join(dir_path, img_name)
             
             if img_path is None:
-                raise FileNotFoundError
-                
+                return None
+
             image = Image.open(img_path).convert('RGB')
             
         except (FileNotFoundError, IndexError, OSError):
-            # Fallback for missing files or empty folders
-            if img_path:
-                print(f"FAILED TO OPEN: {img_path}")
-            else:
-                print(f"NO IMAGES FOUND IN: {dir_path}")
-            image = Image.new('RGB', (224, 224), (0, 0, 0))
+            return None
 
         # 4. Transform, Tokenize, and Labels
         if self.transform:
@@ -153,6 +148,13 @@ def get_transforms(is_train=True, img_size=224):
             transforms.Normalize(mean=mean, std=std)
         ])
 
+def collate_fn(batch):
+    # Filter out None samples
+    batch = list(filter(lambda x: x is not None, batch))
+    if len(batch) == 0:
+        return None
+    return torch.utils.data.dataloader.default_collate(batch)
+
 def create_dataloaders(config, batch_size=None):
     """
     Factory function to create Train/Val/Test loaders from config.
@@ -211,8 +213,8 @@ def create_dataloaders(config, batch_size=None):
         raise ValueError("Config must contain 'jsonl_path'/'json_path' (local) or 'huggingface_dataset'/'dataset_name' (HF).")
 
     # 3. Create Loaders
-    train_loader = DataLoader(train_ds, batch_size=bs, shuffle=True, num_workers=num_workers, pin_memory=True, drop_last=True)
-    val_loader = DataLoader(val_ds, batch_size=bs, shuffle=False, num_workers=num_workers, pin_memory=True)
-    test_loader = DataLoader(test_ds, batch_size=bs, shuffle=False, num_workers=num_workers, pin_memory=True)
+    train_loader = DataLoader(train_ds, batch_size=bs, shuffle=True, num_workers=num_workers, pin_memory=True, drop_last=True, collate_fn=collate_fn)
+    val_loader = DataLoader(val_ds, batch_size=bs, shuffle=False, num_workers=num_workers, pin_memory=True, collate_fn=collate_fn)
+    test_loader = DataLoader(test_ds, batch_size=bs, shuffle=False, num_workers=num_workers, pin_memory=True, collate_fn=collate_fn)
 
     return train_loader, val_loader, test_loader
