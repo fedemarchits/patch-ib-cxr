@@ -30,6 +30,8 @@ class Evaluator:
         # 1. Warmup
         with torch.no_grad():
             for i, batch in enumerate(self.test_loader):
+                if batch is None:
+                    continue
                 if i >= 5: break
                 images, text = batch[0].to(self.device), batch[1].to(self.device)
                 _ = self.model(images, text)
@@ -50,6 +52,8 @@ class Evaluator:
             autocast_enabled = is_cuda
             with torch.amp.autocast(device_type="cuda" if is_cuda else "cpu", enabled=autocast_enabled):
                 for i, batch in enumerate(self.test_loader):
+                    if batch is None:
+                        continue
                     if i >= num_batches: break
                     images, text = batch[0].to(self.device), batch[1].to(self.device)
                     _ = self.model(images, text)
@@ -92,6 +96,8 @@ class Evaluator:
         # 1. Extract Embeddings
         with torch.no_grad():
             for batch in tqdm(self.test_loader, desc="Extracting"):
+                if batch is None:
+                    continue
                 images, text = batch[0].to(self.device), batch[1].to(self.device)
                 
                 # Model returns: img_emb, txt_emb, logits
@@ -153,6 +159,8 @@ class Evaluator:
 
         with torch.no_grad():
             for batch in tqdm(self.train_loader, desc="Train embeddings"):
+                if batch is None:
+                    continue
                 images, text, labels = batch[0].to(self.device), batch[1].to(self.device), batch[2]
 
                 img_emb, _, _ = self.model(images, text)
@@ -171,6 +179,8 @@ class Evaluator:
 
         with torch.no_grad():
             for batch in tqdm(self.test_loader, desc="Test embeddings"):
+                if batch is None:
+                    continue
                 images, text, labels = batch[0].to(self.device), batch[1].to(self.device), batch[2]
 
                 img_emb, _, _ = self.model(images, text)

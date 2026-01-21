@@ -7,7 +7,7 @@ data:
   # I am guessing a standard path here, but you MUST verify this.
   image_root: "/datasets/MIMIC-CXR/files"
   batch_size: 32
-  num_workers: 4 # Slurm usually gives you CPUs, 4 is safe
+  num_workers: 4
   image_size: 224
 
 model:
@@ -19,11 +19,11 @@ model:
   use_sparsity_loss: false
 
 training:
-  epochs: 20
+  epochs: 40
   lr: 1.0e-4
   weight_decay: 0.01
   warmup_steps: 500
-  print_freq: 50 # Print less often on cluster logs
+  print_freq: 50
   device: "cuda"
   use_amp: true
 

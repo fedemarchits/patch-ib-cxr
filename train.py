@@ -9,6 +9,8 @@ from models.full_model import ModelABaseline
 from models.losses import ContrastiveLoss, SparsityLoss
 from data.dataset import create_dataloaders
 from engine.trainer import train_one_epoch
+from engine.utils import EarlyStopping
+from engine.validator import validate
 
 def get_config(config_path):
     with open(config_path, "r") as f:
@@ -107,22 +109,33 @@ def main():
         # 5. Training Loop
         print("Starting Training...")
         best_loss = float('inf')
+
+        early_stopping = EarlyStopping(
+            patience=cfg['training'].get('early_stopping_patience', 5),
+            checkpoint_path=os.path.join(args.output_dir, "best_model.pt"),
+            verbose=True
+        )
         
         for epoch in range(cfg['training']['epochs']):
             # Train
-            train_metrics = train_one_epoch(model, train_loader, optimizer, criterions, device, epoch, scaler, use_amp, wandb_run)
-            print(f"Epoch {epoch} Train Loss: {train_metrics}") # Assuming train_one_epoch returns a float or dict
+            avg_train_loss = train_one_epoch(model, train_loader, optimizer, criterions, device, epoch, scaler, use_amp, wandb_run)
+            print(f"Epoch {epoch} Train Loss: {avg_train_loss}") 
             
             # (Optional) Validation Loop could go here
-            # val_loss = validate(model, val_loader...) 
-            
+            val_loss = validate(model, val_loader, criterions, device, use_amp)
+
+            print(f"Epoch {epoch} | Train Loss: {avg_train_loss:.4f} | Val Loss: {val_loss:.4f}")
+
+            early_stopping(val_loss, model, optimizer, epoch)
+
             # Logging
             if wandb_run:
-                # If train_one_epoch returns just a float:
-                if isinstance(train_metrics, (float, int)):
-                    wandb_run.log({'epoch': epoch, 'train_loss': train_metrics})
-                else:
-                    wandb_run.log(train_metrics)
+                wandb_run.log({
+                    "epoch": epoch, 
+                    "train/epoch_loss": avg_train_loss,
+                    "val/loss": val_loss,
+                    "best_val_loss": early_stopping.best_loss
+                })
 
             # Save Checkpoint (Every epoch)
             ckpt_path = os.path.join(args.output_dir, f"checkpoint_ep{epoch}.pt")
@@ -130,17 +143,13 @@ def main():
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                'loss': train_metrics,
+                'train_loss': avg_train_loss,
+                "val_loss": val_loss
             }, ckpt_path)
             
-            # Save Best Model (Overwrite)
-            # Logic: If current loss is lower than best, save as best_model.pt
-            current_loss = train_metrics if isinstance(train_metrics, float) else train_metrics.get('total_loss', 0)
-            if current_loss < best_loss:
-                best_loss = current_loss
-                best_path = os.path.join(args.output_dir, "best_model.pt")
-                torch.save(model.state_dict(), best_path)
-                print(f" >> Saved New Best Model (Loss: {best_loss:.4f})")
+            if early_stopping.early_stop:
+                print(f"🛑 Early stopping triggered at epoch {epoch}")
+                break
 
     except KeyboardInterrupt:
         print("\nTraining interrupted by user. Saving emergency checkpoint...")
