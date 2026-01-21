@@ -74,8 +74,11 @@ class MedicalImageTextDataset(Dataset):
             
         # 4. Tokenize
         text = self.tokenizer(caption).squeeze(0)
-        
-        return image, text
+
+        # 5. Labels (if available in the JSONL)
+        labels = torch.tensor(entry.get('labels', [0]*14))
+
+        return image, text, labels
 
 class HuggingFaceMIMICDataset(Dataset):
     def __init__(self, dataset_name, split="train", transform=None, tokenizer_name="hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"):
@@ -119,7 +122,9 @@ class HuggingFaceMIMICDataset(Dataset):
         # 3. Tokenize
         text = self.tokenizer(caption).squeeze(0)
         
-        return image, text
+        labels = torch.tensor(entry.get('labels', [0]*14))
+
+        return image, text, labels
 
 def get_transforms(is_train=True, img_size=224):
     """
