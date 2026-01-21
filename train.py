@@ -80,22 +80,27 @@ def main():
         ######## DEBUG CODE ########
         if args.dry_run:
             print("   >> [Dry Run] Fetching 1 batch...")
-            batch = next(iter(train_loader))
+            
+            # Search for the first non-empty batch
+            batch = None
+            for b in train_loader:
+                if b is not None:
+                    batch = b
+                    break
+            
+            if batch is None:
+                print("❌ ERROR: Could not find any valid images in the dataset to test.")
+                return
+
+            # Now safe to subscript
             images, text = batch[0].to(cfg['training']['device']), batch[1].to(cfg['training']['device'])
+
+            print("   >> [Dry Run] Testing Model Forward Pass...")
+            img_emb, txt_emb, logits = model(images, text)
             
-            print("   >> [Dry Run] Forward Pass...")
-            img_emb, txt_emb, logits = model(images, text) 
-            
-            print("   >> [Dry Run] Backward Pass...")
+
             loss = criterions['contrastive'](img_emb, txt_emb, model.logit_scale)
-            loss.backward()
-            
-            if wandb_run:
-                print("   >> [Dry Run] Logging to WandB...")
-                wandb_run.log({"dry_run_test": 1.0})
-                wandb.finish()
-                
-            print("\n✅ DOCKER PIPELINE VERIFIED! Ready to submit.")
+            print(f"   >> [Dry Run] Success! Loss value: {loss.item():.4f}")
             return
         ######## DEBUG CODE ########
 

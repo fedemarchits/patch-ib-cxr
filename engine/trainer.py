@@ -12,6 +12,8 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
     loop = tqdm(dataloader, desc=f"Epoch {epoch}")
     
     for batch in loop:
+        if batch is None:
+            continue  # Skip empty batches
         images, text = batch[0].to(device), batch[1].to(device)
         # labels = batch[2] if len(batch) > 2 else None  # Available if needed
         
