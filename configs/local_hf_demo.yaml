@@ -21,7 +21,7 @@ training:
   weight_decay: 0.01
   warmup_steps: 1
   print_freq: 1
-  device: "cpu"
+  device: "mps"
   use_amp: false
 
 wandb:

@@ -21,44 +21,64 @@ class Evaluator:
     def benchmark_efficiency(self, num_batches=50):
         """
         Measure Throughput (img/sec) and Peak VRAM.
+        Works on CUDA, MPS, and CPU devices.
         """
-        print(f"\n[Efficiency] Benchmarking over {num_batches} batches...")
-        
+        print(f"\n[Efficiency] Benchmarking over {num_batches} batches on {self.device}...")
+
+        is_cuda = self.device == "cuda" or str(self.device).startswith("cuda")
+        is_mps = self.device == "mps" or str(self.device).startswith("mps")
+
         # 1. Warmup
         with torch.no_grad():
             for i, (images, text) in enumerate(self.test_loader):
                 if i >= 5: break
                 images, text = images.to(self.device), text.to(self.device)
                 _ = self.model(images, text)
-        
-        # 2. Reset Monitors
-        torch.cuda.reset_peak_memory_stats()
-        torch.cuda.synchronize()
-        start_event = torch.cuda.Event(enable_timing=True)
-        end_event = torch.cuda.Event(enable_timing=True)
-        
+
+        # 2. Reset Monitors & Sync
+        if is_cuda:
+            torch.cuda.reset_peak_memory_stats()
+            torch.cuda.synchronize()
+        elif is_mps:
+            torch.mps.synchronize()
+
         total_images = 0
-        
+
         # 3. Timing Loop
-        start_event.record()
+        start_time = time.time()
         with torch.no_grad():
-            with torch.amp.autocast(device_type=self.device, enabled=True):
+            # Only use autocast on CUDA
+            autocast_enabled = is_cuda
+            with torch.amp.autocast(device_type="cuda" if is_cuda else "cpu", enabled=autocast_enabled):
                 for i, (images, text) in enumerate(self.test_loader):
                     if i >= num_batches: break
                     images, text = images.to(self.device), text.to(self.device)
                     _ = self.model(images, text)
                     total_images += images.size(0)
-        end_event.record()
-        torch.cuda.synchronize()
-        
+
+        # Sync before measuring time
+        if is_cuda:
+            torch.cuda.synchronize()
+        elif is_mps:
+            torch.mps.synchronize()
+
+        elapsed_sec = time.time() - start_time
+
         # 4. Calculate Stats
-        elapsed_ms = start_event.elapsed_time(end_event)
-        throughput = total_images / (elapsed_ms / 1000.0) # img/sec
-        peak_mem = torch.cuda.max_memory_allocated() / (1024 ** 2) # MB
-        
+        throughput = total_images / elapsed_sec  # img/sec
+
+        # Memory stats (only available on CUDA)
+        if is_cuda:
+            peak_mem = torch.cuda.max_memory_allocated() / (1024 ** 2)  # MB
+        else:
+            peak_mem = 0.0  # Not available on CPU/MPS
+
         print(f"   >> Throughput: {throughput:.2f} img/sec")
-        print(f"   >> Peak VRAM:  {peak_mem:.2f} MB")
-        
+        if is_cuda:
+            print(f"   >> Peak VRAM:  {peak_mem:.2f} MB")
+        else:
+            print(f"   >> Peak VRAM:  N/A (only measured on CUDA)")
+
         return {"throughput": throughput, "peak_vram_mb": peak_mem}
 
     def compute_retrieval(self):
@@ -128,24 +148,37 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True)
-    parser.add_argument("--checkpoint", type=str, required=True, help="Path to best_model.pt")
+    parser.add_argument("--checkpoint", type=str, default=None, help="Path to checkpoint (optional - uses pretrained weights if not provided)")
     parser.add_argument("--batch_size", type=int, default=32)
     args = parser.parse_args()
     
     # 1. Setup
     cfg = get_config(args.config)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Running evaluation on {device} using {args.checkpoint}")
+
+    # Get device from config, with fallback logic
+    config_device = cfg.get('training', {}).get('device', 'cpu')
+    if config_device == "cuda" and not torch.cuda.is_available():
+        print("CUDA not available, falling back to CPU")
+        device = "cpu"
+    elif config_device == "mps" and not torch.backends.mps.is_available():
+        print("MPS not available, falling back to CPU")
+        device = "cpu"
+    else:
+        device = config_device
 
     # 2. Load Model
     model = ModelABaseline(cfg)
-    
-    # Load Checkpoint
-    checkpoint = torch.load(args.checkpoint, map_location=device)
-    if "model_state_dict" in checkpoint:
-        model.load_state_dict(checkpoint["model_state_dict"])
+
+    # Load Checkpoint (optional - uses pretrained weights if not provided)
+    if args.checkpoint:
+        print(f"Running evaluation on {device} using checkpoint: {args.checkpoint}")
+        checkpoint = torch.load(args.checkpoint, map_location=device)
+        if "model_state_dict" in checkpoint:
+            model.load_state_dict(checkpoint["model_state_dict"])
+        else:
+            model.load_state_dict(checkpoint)
     else:
-        model.load_state_dict(checkpoint)
+        print(f"Running evaluation on {device} using pretrained BiomedCLIP weights (no checkpoint)")
     
     # 3. Load Data
     # Only need test_loader
