@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 
 class MedicalImageTextDataset(Dataset):
-    def __init__(self, jsonl_path, image_root, split="train", transform=None, tokenizer_name="hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"):
+    def __init__(self, jsonl_path, image_root, split="train", transform=None, tokenizer_name="hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224", return_labels=False):
         """
         Args:
             jsonl_path: Path to mimicxr_parsed_ds.jsonl
@@ -20,6 +20,7 @@ class MedicalImageTextDataset(Dataset):
         self.image_root = image_root
         self.transform = transform
         self.tokenizer = open_clip.get_tokenizer(tokenizer_name)
+        self.return_labels = return_labels
         self.data = []
 
         # Load JSONL and filter by split
@@ -48,12 +49,14 @@ class MedicalImageTextDataset(Dataset):
         if img_path and os.path.exists(img_path):
             try:
                 image = Image.open(img_path).convert('RGB')
-                
                 if self.transform:
                     image = self.transform(image)
                 
-                # Tokenize the text (OpenCLIP tokenizer)
                 text = self.tokenizer(caption).squeeze(0)
+                
+                if self.return_labels:
+                    labels = torch.tensor(entry.get('labels', [0]*14), dtype=torch.float32)
+                    return image, text, labels
                 
                 return image, text
                 
@@ -137,7 +140,7 @@ def collate_fn(batch):
         return None
     return torch.utils.data.dataloader.default_collate(batch)
 
-def create_dataloaders(config, batch_size=None):
+def create_dataloaders(config, batch_size=None, return_labels=False):
     """
     Factory function to create Train/Val/Test loaders from config.
     """
@@ -163,7 +166,8 @@ def create_dataloaders(config, batch_size=None):
             image_root=data_cfg['image_root'],
             split="train",
             transform=get_transforms(True, img_size),
-            tokenizer_name=tokenizer
+            tokenizer_name=tokenizer,
+            return_labels=return_labels
         )
         
         val_ds = MedicalImageTextDataset(
@@ -171,7 +175,8 @@ def create_dataloaders(config, batch_size=None):
             image_root=data_cfg['image_root'],
             split="validate",
             transform=get_transforms(False, img_size),
-            tokenizer_name=tokenizer
+            tokenizer_name=tokenizer,
+            return_labels=return_labels
         )
 
         test_ds = MedicalImageTextDataset(
@@ -179,7 +184,8 @@ def create_dataloaders(config, batch_size=None):
             image_root=data_cfg['image_root'],
             split="test",
             transform=get_transforms(False, img_size),
-            tokenizer_name=tokenizer
+            tokenizer_name=tokenizer,
+            return_labels=return_labels
         )
 
     elif 'huggingface_dataset' in data_cfg or 'dataset_name' in data_cfg:

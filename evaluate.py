@@ -45,7 +45,7 @@ if __name__ == "__main__":
     # 3. Load Data (UPDATED)
     # We need train_loader to train the classification head!
     print("Loading Data...")
-    train_loader, _, test_loader = create_dataloaders(cfg, batch_size=args.batch_size)
+    train_loader, _, test_loader = create_dataloaders(cfg, batch_size=args.batch_size, return_labels=True)
     
     # 4. Run Evaluation
     # Pass train_loader to the evaluator class
