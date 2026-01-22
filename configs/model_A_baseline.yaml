@@ -2,7 +2,7 @@ experiment_name: "model_a_baseline_biomedclip"
 
 data:
   # The path you provided
-  json_path: "/datasets/MIMIC-CXR/mimicxr_parsed_ds.jsonl"
+  json_path: "/workspace/mimic_moro232_final.jsonl"
   # ⚠️ IMPORTANT: Ask the tutor/prof where the actual IMAGE folders are.
   # I am guessing a standard path here, but you MUST verify this.
   image_root: "/datasets/MIMIC-CXR/files"
@@ -20,7 +20,7 @@ model:
 
 training:
   epochs: 40
-  lr: 2.0e-5  # Lower LR for fine-tuning pretrained BiomedCLIP
+  lr: 2.0e-5 # Lower LR for fine-tuning pretrained BiomedCLIP
   weight_decay: 0.01
   warmup_steps: 500
   early_stopping_patience: 7

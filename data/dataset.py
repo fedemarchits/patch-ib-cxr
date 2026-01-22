@@ -38,48 +38,30 @@ class MedicalImageTextDataset(Dataset):
     def __getitem__(self, idx):
         entry = self.data[idx]
         
-        # 1. Parse Text
+        # 1. Text Parsing
         raw_text = entry.get('query', '')
         caption = raw_text.replace('|', ' ')
         
-        # 2. Construct Study Directory Path
-        subj_id = str(entry['subject_id'])
-        study_id = str(entry['study_id'])
+        # 2. Get verified image path
+        img_path = entry.get('image_path')
         
-        p_folder = f"p{subj_id[:2]}"
-        subj_folder = f"p{subj_id}"
-        study_folder = f"s{study_id}"
-        
-        # Path to the folder containing the images for this study
-        dir_path = os.path.join(self.image_root, p_folder, subj_folder, study_folder)
-
-        # 3. Dynamically Find the Image Filename
-        img_path = None
-        try:
-            if os.path.exists(dir_path):
-                # List all jpg files in the study folder
-                image_files = [f for f in os.listdir(dir_path) if f.endswith('.jpg')]
-                if image_files:
-                    # Pick the first image found
-                    img_name = random.choice(image_files)
-                    img_path = os.path.join(dir_path, img_name)
-            
-            if img_path is None:
+        if img_path and os.path.exists(img_path):
+            try:
+                image = Image.open(img_path).convert('RGB')
+                
+                if self.transform:
+                    image = self.transform(image)
+                
+                # Tokenize the text (OpenCLIP tokenizer)
+                text = self.tokenizer(caption).squeeze(0)
+                
+                return image, text
+                
+            except Exception as e:
+                print(f"Error loading {img_path}: {e}")
                 return None
-
-            image = Image.open(img_path).convert('RGB')
-            
-        except (FileNotFoundError, IndexError, OSError):
+        else:
             return None
-
-        # 4. Transform, Tokenize, and Labels
-        if self.transform:
-            image = self.transform(image)
-            
-        text = self.tokenizer(caption).squeeze(0)
-        labels = torch.tensor(entry.get('labels', [0]*14))
-
-        return image, text, labels
 
 class HuggingFaceMIMICDataset(Dataset):
     def __init__(self, dataset_name, split="train", transform=None, tokenizer_name="hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"):

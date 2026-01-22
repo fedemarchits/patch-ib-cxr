@@ -156,11 +156,21 @@ def main():
 
             # Logging
             if wandb_run:
+                # Get current learning rate from optimizer
+                current_lr = optimizer.param_groups[0]['lr']
+                
+                # Get the learned temperature (logit_scale)
+                # CLIP uses exp(logit_scale) as the multiplier
+                with torch.no_grad():
+                    temp = model.logit_scale.exp().item()
+
                 wandb_run.log({
                     "epoch": epoch, 
                     "train/epoch_loss": avg_train_loss,
                     "val/loss": val_loss,
-                    "best_val_loss": early_stopping.best_loss
+                    "best_val_loss": early_stopping.best_loss,
+                    "learning_rate": current_lr,
+                    "model/temperature": temp
                 })
 
             # Save Checkpoint (Every epoch)
