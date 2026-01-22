@@ -172,6 +172,16 @@ def main():
                     "learning_rate": current_lr,
                     "model/temperature": temp
                 })
+                if val_loss == early_stopping.best_loss:
+                    print(f"⬆️ Uploading new best model artifact to WandB...")
+                    artifact = wandb.Artifact(
+                        name=f"{wandb_run.name}_best_model", 
+                        type="model",
+                        description=f"Best model from epoch {epoch}"
+                    )
+                    # Point to the file saved by EarlyStopping
+                    artifact.add_file(early_stopping.checkpoint_path)
+                    wandb_run.log_artifact(artifact)
 
             # Save Checkpoint (Every epoch)
             ckpt_path = os.path.join(args.output_dir, f"checkpoint_ep{epoch}.pt")
