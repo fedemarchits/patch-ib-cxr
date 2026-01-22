@@ -148,7 +148,7 @@ def create_dataloaders(config, batch_size=None):
     # Defaults
     bs = batch_size if batch_size is not None else data_cfg.get('batch_size', 32)
     num_workers = data_cfg.get('num_workers', 4)
-    img_size = data_cfg.get('img_size', 224)
+    img_size = data_cfg.get('image_size', 224)
     tokenizer = model_cfg.get('tokenizer_name', "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224")
 
     # 2. Instantiate Datasets

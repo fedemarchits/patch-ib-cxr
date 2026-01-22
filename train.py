@@ -4,7 +4,7 @@ import argparse
 import wandb
 import os
 import math
-from torch.cuda.amp import GradScaler
+from torch.amp import GradScaler
 from torch.optim.lr_scheduler import LambdaLR
 
 from models.full_model import ModelABaseline
