@@ -15,6 +15,7 @@ docker run \
     -e WANDB_API_KEY="$WANDB_API_KEY" \
     --rm \
     --memory="30g" \
+    --shm-size="8g" \
     --gpus '"device='"$CUDA_VISIBLE_DEVICES"'"' \
     patch_ib_img \
     "/workspace/train.sh" "$@"
