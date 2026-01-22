@@ -1,12 +1,14 @@
 #!/bin/bash
 # train.sh
 
-# $1: Config file name (e.g., model_A_baseline.yaml)
-# $2: Optional flags (e.g., --dry_run)
+# Default config if $1 is empty
+CONFIG=${1:-model_a_baseline.yaml}
+# Shift the arguments so that $@ now contains everything EXCEPT the config name
+shift 
 
-echo "Running Training inside Docker..."
-echo "Config: configs/${1}"
-echo "Flags: ${2}"
+echo "🚀 Starting Training..."
+echo "📄 Config: configs/$CONFIG"
+echo "additional flags: $@"
 
-# Pass the second argument ($2) to the python script
-python3 train.py --config configs/${1} ${2}
+# $@ passes ALL remaining arguments to the python script
+python3 train.py --config "configs/$CONFIG" "$@"
