@@ -7,6 +7,8 @@ PHYS_DIR=$(pwd)
 LLM_CACHE_DIR="/llms"
 DOCKER_INTERNAL_CACHE_DIR="/llms"
 
+chmod +x "$PHYS_DIR/train.sh"
+
 docker run \
     -v "$PHYS_DIR":/workspace \
     -v /datasets:/datasets \
