@@ -1,7 +1,7 @@
 #!/bin/bash
 # run_docker.sh
 
-export WANDB_API_KEY="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"
+export WANDB_API_KEY="YOUR_API_KEY_HERE"
 
 PHYS_DIR=$(pwd)
 LLM_CACHE_DIR="/llms"
