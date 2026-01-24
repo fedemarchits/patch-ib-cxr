@@ -7,6 +7,8 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
     num_batches = 0
     sparsity_criterion = criterion['sparsity']
     contrastive_criterion = criterion['contrastive']
+    local_criterion = criterion.get('local_alignment', None)
+    local_weight = criterion.get('local_weight', 0.1)
 
     loop = tqdm(dataloader, desc=f"Epoch {epoch}")
 
@@ -20,14 +22,24 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
         optimizer.zero_grad()
 
         with torch.amp.autocast(device_type=device, enabled=use_amp):
-            img_emb, txt_emb, logits = model(images, text)
+            img_emb, txt_emb, logits, local_features = model(images, text)
 
+            # Global contrastive loss
             loss_con = contrastive_criterion(img_emb, txt_emb, model.logit_scale)
             loss = loss_con
 
+            # Sparsity loss (if masking enabled)
+            loss_sparse = None
             if logits is not None:
                 loss_sparse = sparsity_criterion(logits) * 10.0
                 loss = loss + loss_sparse
+
+            # Local alignment loss (if enabled)
+            loss_local = None
+            if local_criterion is not None and local_features is not None:
+                patch_feat, token_feat, attn_mask = local_features
+                loss_local = local_criterion(patch_feat, token_feat, attn_mask)
+                loss = loss + local_weight * loss_local
 
         scaler.scale(loss).backward()
         scaler.step(optimizer)
@@ -46,8 +58,10 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
                 "train/contrastive_loss": loss_con.item(),
                 "train/learning_rate": optimizer.param_groups[0]['lr']
             }
-            if logits is not None:
+            if loss_sparse is not None:
                 log_dict["train/sparsity_loss"] = loss_sparse.item()
+            if loss_local is not None:
+                log_dict["train/local_alignment_loss"] = loss_local.item()
 
             wandb_run.log(log_dict)
 

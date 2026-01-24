@@ -1,10 +1,7 @@
-experiment_name: "model_a_baseline_biomedclip"
+experiment_name: "model_b_local_alignment"
 
 data:
-  # The path you provided
   json_path: "/workspace/mimic_moro232_labeled.jsonl"
-  # ⚠️ IMPORTANT: Ask the tutor/prof where the actual IMAGE folders are.
-  # I am guessing a standard path here, but you MUST verify this.
   image_root: "/datasets/MIMIC-CXR/files"
   batch_size: 48
   num_workers: 4
@@ -18,13 +15,13 @@ model:
   use_masking: false
   use_sparsity_loss: false
   # Local Alignment Configuration
-  use_local_alignment: false          # Enable/disable local alignment loss
-  local_alignment_weight: 0.1         # Lambda weight for local loss
-  local_alignment_temperature: 1.0    # Softmax temperature for attention
+  use_local_alignment: true
+  local_alignment_weight: 0.1
+  local_alignment_temperature: 1.0
 
 training:
   epochs: 40
-  lr: 2.0e-5 # Lower LR for fine-tuning pretrained BiomedCLIP
+  lr: 2.0e-5
   weight_decay: 0.01
   warmup_steps: 500
   early_stopping_patience: 7
@@ -35,4 +32,4 @@ training:
 wandb:
   enable: true
   project: "Thesis-PatchIB"
-  run_name: "model-a-baseline"
+  run_name: "model-b-local-alignment"

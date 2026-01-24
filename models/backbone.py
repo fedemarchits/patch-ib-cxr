@@ -27,6 +27,32 @@ class BiomedCLIPBackbone(nn.Module):
         """
         return self.clip_model.encode_text(text_tokens)
 
+    def encode_text_tokens(self, text_tokens):
+        """
+        Extract token-level embeddings from the text encoder.
+
+        Args:
+            text_tokens: (B, L) tokenized text
+
+        Returns:
+            token_embeddings: (B, L, 768) - raw token embeddings before pooling
+            attention_mask: (B, L) - mask where 1=valid token, 0=padding
+        """
+        text_encoder = self.clip_model.text
+
+        # Get the attention mask (1 for real tokens, 0 for padding)
+        # BiomedCLIP/PubMedBERT uses 0 as pad_token_id
+        attention_mask = (text_tokens != 0).long()
+
+        # Forward through the transformer to get hidden states
+        out = text_encoder.transformer(
+            input_ids=text_tokens,
+            attention_mask=attention_mask
+        )
+
+        # last_hidden_state: (B, L, 768)
+        return out.last_hidden_state, attention_mask
+
     def encode_image_patches(self, images):
         # Checks if the model has a "trunk" (common in some timm/clip backends)
         # or uses forward_features directly.

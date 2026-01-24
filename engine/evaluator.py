@@ -99,8 +99,8 @@ class Evaluator:
                 
                 images, text = batch[0].to(self.device), batch[1].to(self.device)
                 
-                # Model returns: img_emb, txt_emb, logits
-                i_emb, t_emb, _ = self.model(images, text)
+                # Model returns: img_emb, txt_emb, logits, local_features
+                i_emb, t_emb, _, _ = self.model(images, text)
                 
                 # Normalize (Crucial for Cosine Similarity)
                 i_emb = F.normalize(i_emb, dim=-1)
@@ -162,7 +162,7 @@ class Evaluator:
                     continue
                 images, text, labels = batch[0].to(self.device), batch[1].to(self.device), batch[2]
 
-                img_emb, _, _ = self.model(images, text)
+                img_emb, _, _, _ = self.model(images, text)
                 img_emb = F.normalize(img_emb, dim=-1)
 
                 train_embs.append(img_emb.cpu().numpy())
@@ -182,7 +182,7 @@ class Evaluator:
                     continue
                 images, text, labels = batch[0].to(self.device), batch[1].to(self.device), batch[2]
 
-                img_emb, _, _ = self.model(images, text)
+                img_emb, _, _, _ = self.model(images, text)
                 img_emb = F.normalize(img_emb, dim=-1)
 
                 test_embs.append(img_emb.cpu().numpy())

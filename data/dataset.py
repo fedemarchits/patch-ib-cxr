@@ -2,8 +2,6 @@ import os
 import json
 import torch
 import open_clip
-import datasets
-import random
 from torch.utils.data import Dataset
 from PIL import Image
 from torch.utils.data import DataLoader
@@ -66,52 +64,6 @@ class MedicalImageTextDataset(Dataset):
         else:
             return None
 
-class HuggingFaceMIMICDataset(Dataset):
-    def __init__(self, dataset_name, split="train", transform=None, tokenizer_name="hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"):
-        """
-        Args:
-            dataset_name: Name of the dataset on Hugging Face Hub (e.g., "itsanmolgupta/mimic-cxr-dataset")
-            split: 'train', 'validation', or 'test'
-        """
-        self.transform = transform
-        self.tokenizer = open_clip.get_tokenizer(tokenizer_name)
-        
-        print(f"Loading dataset {dataset_name} from Hugging Face Hub for split: {split}...")
-        # Note: The split name in the HF dataset is 'validation', not 'validate'
-        hf_split = 'validation' if split == 'validate' else split
-
-        # Check available splits and fallback to 'train' if requested split doesn't exist
-        available_splits = datasets.get_dataset_split_names(dataset_name)
-        if hf_split not in available_splits:
-            print(f"   >> Warning: Split '{hf_split}' not found. Available: {available_splits}. Using 'train' instead.")
-            hf_split = 'train'
-
-        self.dataset = datasets.load_dataset(dataset_name, split=hf_split)
-        
-        print(f"Loaded {len(self.dataset)} samples.")
-
-    def __len__(self):
-        return len(self.dataset)
-
-    def __getitem__(self, idx):
-        entry = self.dataset[idx]
-        
-        # 1. Get Text
-        caption = entry.get('text', '')
-        
-        # 2. Get Image
-        image = entry['image'].convert('RGB')
-
-        if self.transform:
-            image = self.transform(image)
-            
-        # 3. Tokenize
-        text = self.tokenizer(caption).squeeze(0)
-        
-        labels = torch.tensor(entry.get('labels', [0]*14))
-
-        return image, text, labels
-
 def get_transforms(is_train=True, img_size=224):
     """
     Standard ImageNet normalization + Augmentation for training.
@@ -155,50 +107,38 @@ def create_dataloaders(config, batch_size=None, return_labels=False):
     tokenizer = model_cfg.get('tokenizer_name', "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224")
 
     # 2. Instantiate Datasets
-    # Check if we are using Local JSONL or HuggingFace based on config keys
-    if 'jsonl_path' in data_cfg or 'json_path' in data_cfg:
-        # --- LOCAL DATASET STRATEGY ---
-        jsonl_path = data_cfg.get('jsonl_path') or data_cfg.get('json_path')
-        print(f"[Data] Creating Local Datasets from {jsonl_path}")
+    jsonl_path = data_cfg.get('jsonl_path') or data_cfg.get('json_path')
+    if not jsonl_path:
+        raise ValueError("Config must contain 'jsonl_path' or 'json_path'.")
 
-        train_ds = MedicalImageTextDataset(
-            jsonl_path=jsonl_path,
-            image_root=data_cfg['image_root'],
-            split="train",
-            transform=get_transforms(True, img_size),
-            tokenizer_name=tokenizer,
-            return_labels=return_labels
-        )
-        
-        val_ds = MedicalImageTextDataset(
-            jsonl_path=jsonl_path,
-            image_root=data_cfg['image_root'],
-            split="validate",
-            transform=get_transforms(False, img_size),
-            tokenizer_name=tokenizer,
-            return_labels=return_labels
-        )
+    print(f"[Data] Creating Datasets from {jsonl_path}")
 
-        test_ds = MedicalImageTextDataset(
-            jsonl_path=jsonl_path,
-            image_root=data_cfg['image_root'],
-            split="test",
-            transform=get_transforms(False, img_size),
-            tokenizer_name=tokenizer,
-            return_labels=return_labels
-        )
+    train_ds = MedicalImageTextDataset(
+        jsonl_path=jsonl_path,
+        image_root=data_cfg['image_root'],
+        split="train",
+        transform=get_transforms(True, img_size),
+        tokenizer_name=tokenizer,
+        return_labels=return_labels
+    )
 
-    elif 'huggingface_dataset' in data_cfg or 'dataset_name' in data_cfg:
-        # --- HUGGINGFACE STRATEGY ---
-        ds_name = data_cfg.get('huggingface_dataset') or data_cfg.get('dataset_name')
-        print(f"[Data] Creating HuggingFace Datasets: {ds_name}")
-        
-        train_ds = HuggingFaceMIMICDataset(ds_name, split="train", transform=get_transforms(True, img_size), tokenizer_name=tokenizer)
-        val_ds = HuggingFaceMIMICDataset(ds_name, split="validation", transform=get_transforms(False, img_size), tokenizer_name=tokenizer)
-        test_ds = HuggingFaceMIMICDataset(ds_name, split="test", transform=get_transforms(False, img_size), tokenizer_name=tokenizer)
-    
-    else:
-        raise ValueError("Config must contain 'jsonl_path'/'json_path' (local) or 'huggingface_dataset'/'dataset_name' (HF).")
+    val_ds = MedicalImageTextDataset(
+        jsonl_path=jsonl_path,
+        image_root=data_cfg['image_root'],
+        split="validate",
+        transform=get_transforms(False, img_size),
+        tokenizer_name=tokenizer,
+        return_labels=return_labels
+    )
+
+    test_ds = MedicalImageTextDataset(
+        jsonl_path=jsonl_path,
+        image_root=data_cfg['image_root'],
+        split="test",
+        transform=get_transforms(False, img_size),
+        tokenizer_name=tokenizer,
+        return_labels=return_labels
+    )
 
     # 3. Create Loaders
     train_loader = DataLoader(train_ds, batch_size=bs, shuffle=True, num_workers=num_workers, pin_memory=True, drop_last=True, collate_fn=collate_fn)

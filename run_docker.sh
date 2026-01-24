@@ -2,7 +2,8 @@
 # run_docker.sh
 
 export WANDB_API_KEY="YOUR_API_KEY_HERE"
-export WANDB_HTTP_TIMEOUT=60
+export WANDB_HTTP_TIMEOUT=120 # Sets it on your host machine
+
 PHYS_DIR=$(pwd)
 LLM_CACHE_DIR="/llms"
 DOCKER_INTERNAL_CACHE_DIR="/llms"
@@ -15,6 +16,7 @@ docker run \
     -v "$LLM_CACHE_DIR":"$DOCKER_INTERNAL_CACHE_DIR" \
     -e HF_HOME="$DOCKER_INTERNAL_CACHE_DIR" \
     -e WANDB_API_KEY="$WANDB_API_KEY" \
+    -e WANDB_HTTP_TIMEOUT="$WANDB_HTTP_TIMEOUT" \  # 🚀 ADD THIS LINE
     --rm \
     --memory="30g" \
     --shm-size="8g" \
