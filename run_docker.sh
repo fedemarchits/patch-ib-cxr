@@ -2,7 +2,7 @@
 # run_docker.sh
 
 export WANDB_API_KEY="YOUR_API_KEY_HERE"
-
+export WANDB_HTTP_TIMEOUT=60
 PHYS_DIR=$(pwd)
 LLM_CACHE_DIR="/llms"
 DOCKER_INTERNAL_CACHE_DIR="/llms"
