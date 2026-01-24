@@ -42,11 +42,15 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
                 loss = loss + local_weight * loss_local
 
         scaler.scale(loss).backward()
+
+        # Track optimizer step count to check if step was skipped (inf/nan gradients)
+        old_step = optimizer._step_count
+
         scaler.step(optimizer)
         scaler.update()
 
-        # Step the scheduler after each batch (not epoch)
-        if scheduler is not None:
+        # Only step scheduler if optimizer actually stepped (not skipped due to inf/nan)
+        if scheduler is not None and optimizer._step_count > old_step:
             scheduler.step()
 
         total_loss += loss.item()
