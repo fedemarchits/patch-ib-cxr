@@ -179,28 +179,6 @@ def main():
                     "learning_rate": current_lr,
                     "model/temperature": temp
                 })
-                if val_loss == early_stopping.best_loss:
-                    print(f"⬆️ Uploading new best model artifact to WandB...")
-                    artifact = wandb.Artifact(
-                        name=f"{wandb_run.name}_best_model", 
-                        type="model",
-                        description=f"Best model from epoch {epoch}"
-                    )
-                    # Point to the file saved by EarlyStopping
-                    artifact.add_file(early_stopping.checkpoint_path)
-                    wandb_run.log_artifact(artifact)
-
-            # Save Checkpoint (Every epoch)
-            ckpt_path = os.path.join(args.output_dir, f"checkpoint_ep{epoch}.pt")
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'scheduler_state_dict': scheduler.state_dict(),
-                'train_loss': avg_train_loss,
-                "val_loss": val_loss
-            }, ckpt_path)
-            
             if early_stopping.early_stop:
                 print(f"🛑 Early stopping triggered at epoch {epoch}")
                 break
