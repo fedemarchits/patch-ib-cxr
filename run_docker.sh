@@ -18,7 +18,7 @@ docker run \
     -e WANDB_API_KEY="$WANDB_API_KEY" \
     -e WANDB_HTTP_TIMEOUT="$WANDB_HTTP_TIMEOUT" \
     --rm \
-    --memory="30g" \
+    --memory="40g" \
     --shm-size="8g" \
     --gpus '"device='"$CUDA_VISIBLE_DEVICES"'"' \
     patch_ib_img \

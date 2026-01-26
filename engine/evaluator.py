@@ -119,22 +119,23 @@ class Evaluator:
         
         metrics = {}
         
-        # 3. Calculate R@K
+        # 3. Calculate R@K using sorting
         for mode in ['i2t', 't2i']:
-            if mode == 't2i':
-                sims = sim_matrix.T # Text query -> Image target
-            else:
-                sims = sim_matrix   # Image query -> Text target
-                
-            # Ground truth is diagonal (i-th image matches i-th text)
-            ground_truth_scores = sims.diag()
+            sims = sim_matrix.T if mode == 't2i' else sim_matrix
+            num_queries = sims.size(0)
             
-            # Rank: Count how many scores > ground_truth
-            rank_matrix = (sims > ground_truth_scores.unsqueeze(1)).sum(dim=1) + 1
+            # Get the indices of the top 10 matches for every query
+            # topk_indices shape: [num_queries, 10]
+            _, topk_indices = sims.topk(10, dim=1, largest=True, sorted=True)
             
-            r1 = (rank_matrix <= 1).float().mean().item() * 100
-            r5 = (rank_matrix <= 5).float().mean().item() * 100
-            r10 = (rank_matrix <= 10).float().mean().item() * 100
+            # Ground truth for query i is index i
+            targets = torch.arange(num_queries).view(-1, 1)
+            
+            # Check if target index is in the top K
+            # This will finally give you different numbers for R@1, 5, and 10
+            r1 = (topk_indices[:, :1] == targets).any(dim=1).float().mean().item() * 100
+            r5 = (topk_indices[:, :5] == targets).any(dim=1).float().mean().item() * 100
+            r10 = (topk_indices[:, :10] == targets).any(dim=1).float().mean().item() * 100
             
             metrics[f"{mode}_R@1"] = r1
             metrics[f"{mode}_R@5"] = r5
@@ -199,36 +200,32 @@ class Evaluator:
         aucs = []
         aps = []
 
+        class_results = {}
         for i in range(num_classes):
             y_train = train_labels[:, i]
             y_test = test_labels[:, i]
 
-            # Skip if no positive samples
             if y_train.sum() == 0 or y_test.sum() == 0:
-                print(f"      Class {i}: Skipped (no positive samples)")
                 continue
 
-            # Train logistic regression
             clf = LogisticRegression(max_iter=1000, solver='lbfgs', class_weight='balanced')
             clf.fit(train_embs, y_train)
-
-            # Predict probabilities
             y_pred_proba = clf.predict_proba(test_embs)[:, 1]
 
-            # Compute metrics
             auc = roc_auc_score(y_test, y_pred_proba)
             ap = average_precision_score(y_test, y_pred_proba)
 
             aucs.append(auc)
             aps.append(ap)
+            # Store individual class performance for your thesis table
+            class_results[f"class_{i}_auc"] = auc
 
         mean_auc = np.mean(aucs) if aucs else 0.0
         mean_ap = np.mean(aps) if aps else 0.0
-
-        print(f"   >> Mean AUC: {mean_auc:.4f}")
-        print(f"   >> Mean AP:  {mean_ap:.4f}")
-
+        
+        # Merge dictionaries to return everything
         return {
             "classification_mean_auc": mean_auc,
-            "classification_mean_ap": mean_ap
+            "classification_mean_ap": mean_ap,
+            **class_results
         }
