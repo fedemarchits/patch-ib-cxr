@@ -20,7 +20,7 @@ model:
   # Local Alignment Configuration
   use_local_alignment: false # Enable/disable local alignment loss
   local_alignment_weight: 0.1 # Lambda weight for local loss
-  local_alignment_temperature: 1.0 # Softmax temperature for attention
+  local_alignment_temperature: 0.7 # Softmax temperature for attention
 
 training:
   epochs: 40
