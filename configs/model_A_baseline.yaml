@@ -18,16 +18,16 @@ model:
   use_masking: false
   use_sparsity_loss: false
   # Local Alignment Configuration
-  use_local_alignment: false          # Enable/disable local alignment loss
-  local_alignment_weight: 0.1         # Lambda weight for local loss
-  local_alignment_temperature: 1.0    # Softmax temperature for attention
+  use_local_alignment: false # Enable/disable local alignment loss
+  local_alignment_weight: 0.1 # Lambda weight for local loss
+  local_alignment_temperature: 1.0 # Softmax temperature for attention
 
 training:
   epochs: 40
   lr: 2.0e-5 # Lower LR for fine-tuning pretrained BiomedCLIP
   weight_decay: 0.01
   warmup_steps: 500
-  early_stopping_patience: 7
+  early_stopping_patience: 12
   print_freq: 50
   device: "cuda"
   use_amp: true

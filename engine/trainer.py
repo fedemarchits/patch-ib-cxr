@@ -66,7 +66,18 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
             if loss_sparse is not None:
                 log_dict["train/sparsity_loss"] = loss_sparse.item()
             if loss_local is not None:
+                # Raw local loss
                 log_dict["train/local_alignment_loss"] = loss_local.item()
+
+                # Weighted local loss (actual contribution to total loss)
+                weighted_local = local_weight * loss_local.item()
+                log_dict["train/local_alignment_loss_weighted"] = weighted_local
+
+                # Loss balance metrics
+                contrastive_val = loss_con.item()
+                log_dict["loss_balance/contrastive_vs_local_ratio"] = contrastive_val / (weighted_local + 1e-8)
+                log_dict["loss_balance/local_contribution_pct"] = 100 * weighted_local / (contrastive_val + weighted_local + 1e-8)
+                log_dict["loss_balance/contrastive_contribution_pct"] = 100 * contrastive_val / (contrastive_val + weighted_local + 1e-8)
 
             wandb_run.log(log_dict)
 

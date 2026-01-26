@@ -16,7 +16,7 @@ model:
   use_sparsity_loss: false
   # Local Alignment Configuration
   use_local_alignment: true
-  local_alignment_weight: 0.1
+  local_alignment_weight: 10
   local_alignment_temperature: 1.0
 
 training:
