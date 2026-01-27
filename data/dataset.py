@@ -84,6 +84,44 @@ def get_transforms(is_train=True, img_size=224):
             transforms.ToTensor(),
             transforms.Normalize(mean=mean, std=std)
         ])
+    
+def get_transforms(is_train=True, img_size=224):
+    """
+    Upgraded transforms based on ConVIRT and BiomedCLIP literature.
+    Focuses on clinical plausibility rather than standard ImageNet noise.
+    """
+    mean = [0.485, 0.456, 0.406]
+    std = [0.229, 0.224, 0.225]
+
+    if is_train:
+        return transforms.Compose([
+            # 1. Random Resized Crop: Literature (ConVIRT) suggest scale (0.75, 1.0) 
+            # to ensure the heart/lungs remain the central focus.
+            transforms.RandomResizedCrop(img_size, scale=(0.75, 1.0), ratio=(0.75, 1.33)),
+            
+            # 2. Horizontal Flip: Very common in CXR literature to double the 
+            # dataset while maintaining anatomical logic.
+            transforms.RandomHorizontalFlip(p=0.5),
+            
+            # 3. Affine/Rotation: Simulate patient "tilt" against the detector.
+            # Usually kept between 5-15 degrees in GLoRIA/MedCLIP.
+            transforms.RandomRotation(degrees=10),
+            
+            # 4. ColorJitter: ONLY Brightness and Contrast. 
+            # Saturation and Hue are useless for grayscale X-rays.
+            transforms.ColorJitter(brightness=0.2, contrast=0.2),
+            
+            transforms.ToTensor(),
+            transforms.Normalize(mean=mean, std=std)
+        ])
+    else:
+        return transforms.Compose([
+            # Validation should always be deterministic
+            transforms.Resize(img_size),
+            transforms.CenterCrop(img_size),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=mean, std=std)
+        ])
 
 def collate_fn(batch):
     # Filter out None samples
