@@ -17,7 +17,8 @@ model:
   # Local Alignment Configuration
   use_local_alignment: true
   local_alignment_weight: 10
-  local_alignment_temperature: 1.0
+  local_alignment_temperature: 0.1
+  local_alignment_warmup_steps: 2000
 
 training:
   epochs: 40

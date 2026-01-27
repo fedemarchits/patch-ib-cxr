@@ -1,14 +1,15 @@
 import torch
 from tqdm import tqdm
 
-def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scaler, use_amp, wandb_run=None, log_every_n_steps=20, scheduler=None):
+def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scaler, use_amp, wandb_run=None, log_every_n_steps=20, scheduler=None, global_step=0):
     model.train()
     total_loss = 0
     num_batches = 0
     sparsity_criterion = criterion['sparsity']
     contrastive_criterion = criterion['contrastive']
     local_criterion = criterion.get('local_alignment', None)
-    local_weight = criterion.get('local_weight', 0.1)
+    local_weight_target = criterion.get('local_weight', 0.1)
+    local_warmup_steps = criterion.get('local_warmup_steps', 0)
 
     loop = tqdm(dataloader, desc=f"Epoch {epoch}")
 
@@ -36,9 +37,18 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
 
             # Local alignment loss (if enabled)
             loss_local = None
+            local_weight = 0.0
             if local_criterion is not None and local_features is not None:
                 patch_feat, token_feat, attn_mask = local_features
                 loss_local = local_criterion(patch_feat, token_feat, attn_mask)
+
+                # Apply linear warmup to local weight
+                if local_warmup_steps > 0:
+                    warmup_factor = min(1.0, global_step / local_warmup_steps)
+                else:
+                    warmup_factor = 1.0
+                local_weight = local_weight_target * warmup_factor
+
                 loss = loss + local_weight * loss_local
 
         scaler.scale(loss).backward()
@@ -56,6 +66,7 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
 
         total_loss += loss.item()
         loop.set_postfix(loss=loss.item())
+        global_step += 1
 
         if wandb_run and num_batches % log_every_n_steps == 0:
             log_dict = {
@@ -79,6 +90,10 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
                 log_dict["loss_balance/local_contribution_pct"] = 100 * weighted_local / (contrastive_val + weighted_local + 1e-8)
                 log_dict["loss_balance/contrastive_contribution_pct"] = 100 * contrastive_val / (contrastive_val + weighted_local + 1e-8)
 
+                # Log current local weight (shows warmup progress)
+                log_dict["train/local_weight_current"] = local_weight
+
             wandb_run.log(log_dict)
 
-    return total_loss / num_batches if num_batches > 0 else 0
+    avg_loss = total_loss / num_batches if num_batches > 0 else 0
+    return avg_loss, global_step

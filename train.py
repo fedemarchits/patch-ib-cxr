@@ -100,6 +100,7 @@ def main():
                 temperature=cfg['model'].get('local_alignment_temperature', 1.0)
             )
             criterions['local_weight'] = cfg['model'].get('local_alignment_weight', 0.1)
+            criterions['local_warmup_steps'] = cfg['model'].get('local_alignment_warmup_steps', 0)
         
         # GradScaler for mixed precision
         scaler = torch.amp.GradScaler(device, enabled=use_amp)
@@ -142,16 +143,17 @@ def main():
         # 5. Training Loop
         print("Starting Training...")
         best_loss = float('inf')
+        global_step = 0
 
         early_stopping = EarlyStopping(
             patience=cfg['training'].get('early_stopping_patience', 5),
             checkpoint_path=os.path.join(args.output_dir, "best_model.pt"),
             verbose=True
         )
-        
+
         for epoch in range(cfg['training']['epochs']):
             # Train
-            avg_train_loss = train_one_epoch(model, train_loader, optimizer, criterions, device, epoch, scaler, use_amp, wandb_run, scheduler=scheduler)
+            avg_train_loss, global_step = train_one_epoch(model, train_loader, optimizer, criterions, device, epoch, scaler, use_amp, wandb_run, scheduler=scheduler, global_step=global_step)
             print(f"Epoch {epoch} Train Loss: {avg_train_loss}") 
             
             # (Optional) Validation Loop could go here
