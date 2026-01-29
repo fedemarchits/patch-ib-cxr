@@ -1,7 +1,7 @@
 experiment_name: "model_a_baseline_biomedclip"
 
 data:
-  json_path: "/workspace/mimic_moro232_labeled.jsonl"
+  json_path: "/workspace/mimic_moro232_stratified.jsonl"
   image_root: "/datasets/MIMIC-CXR/files"
   batch_size: 64
   num_workers: 4
