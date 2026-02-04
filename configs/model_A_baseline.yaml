@@ -3,7 +3,7 @@ experiment_name: "model_a_baseline_biomedclip"
 data:
   json_path: "/workspace/mimic_moro232_stratified.jsonl"
   image_root: "/datasets/MIMIC-CXR/files"
-  batch_size: 64
+  batch_size: 96
   num_workers: 4
   image_size: 224
 
@@ -21,9 +21,9 @@ model:
 
 training:
   epochs: 40
-  lr: 1.0e-5
-  weight_decay: 0.1
-  warmup_steps: 500
+  lr: 5.0e-6
+  weight_decay: 0.01
+  warmup_steps: 1000
   early_stopping_patience: 13
   print_freq: 50
   device: "cuda"

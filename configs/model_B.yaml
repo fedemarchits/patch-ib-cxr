@@ -3,7 +3,7 @@ experiment_name: "model_b_local_alignment"
 data:
   json_path: "/workspace/mimic_moro232_stratified.jsonl"
   image_root: "/datasets/MIMIC-CXR/files"
-  batch_size: 48
+  batch_size: 96
   num_workers: 4
   image_size: 224
 
