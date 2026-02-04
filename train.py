@@ -105,11 +105,16 @@ def main():
         # GradScaler for mixed precision
         scaler = torch.amp.GradScaler(device, enabled=use_amp)
 
+        # Gradient accumulation
+        accumulation_steps = cfg['training'].get('gradient_accumulation_steps', 1)
+
         # Learning rate scheduler with warmup
-        num_training_steps = len(train_loader) * cfg['training']['epochs']
+        # Adjust training steps for gradient accumulation (fewer optimizer steps)
+        num_training_steps = (len(train_loader) * cfg['training']['epochs']) // accumulation_steps
         num_warmup_steps = cfg['training'].get('warmup_steps', 500)
         scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps, num_training_steps)
         print(f"Scheduler: {num_warmup_steps} warmup steps, {num_training_steps} total steps")
+        print(f"Gradient accumulation: {accumulation_steps} steps (effective batch size: {cfg['data']['batch_size'] * accumulation_steps})")
 
         ######## DEBUG CODE ########
         if args.dry_run:
@@ -153,7 +158,7 @@ def main():
 
         for epoch in range(cfg['training']['epochs']):
             # Train
-            avg_train_loss, global_step = train_one_epoch(model, train_loader, optimizer, criterions, device, epoch, scaler, use_amp, wandb_run, scheduler=scheduler, global_step=global_step)
+            avg_train_loss, global_step = train_one_epoch(model, train_loader, optimizer, criterions, device, epoch, scaler, use_amp, wandb_run, scheduler=scheduler, global_step=global_step, accumulation_steps=accumulation_steps)
             print(f"Epoch {epoch} Train Loss: {avg_train_loss}") 
             
             # (Optional) Validation Loop could go here

@@ -1,7 +1,7 @@
 import torch
 from tqdm import tqdm
 
-def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scaler, use_amp, wandb_run=None, log_every_n_steps=20, scheduler=None, global_step=0):
+def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scaler, use_amp, wandb_run=None, log_every_n_steps=20, scheduler=None, global_step=0, accumulation_steps=1):
     model.train()
     total_loss = 0
     num_batches = 0
@@ -13,14 +13,16 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
 
     loop = tqdm(dataloader, desc=f"Epoch {epoch}")
 
-    for batch in loop:
+    for batch_idx, batch in enumerate(loop):
         if batch is None:
             continue
 
         num_batches += 1
         images, text = batch[0].to(device), batch[1].to(device)
 
-        optimizer.zero_grad()
+        # Only zero gradients at the start of accumulation cycle
+        if batch_idx % accumulation_steps == 0:
+            optimizer.zero_grad()
 
         with torch.amp.autocast(device_type=device, enabled=use_amp):
             img_emb, txt_emb, logits, local_features = model(images, text)
@@ -51,21 +53,27 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
 
                 loss = loss + local_weight * loss_local
 
+            # Scale loss by accumulation steps for gradient averaging
+            loss = loss / accumulation_steps
+
         scaler.scale(loss).backward()
 
-        # Track scale to detect if optimizer step was skipped (inf/nan gradients)
-        old_scale = scaler.get_scale()
+        # Only update weights every accumulation_steps
+        if (batch_idx + 1) % accumulation_steps == 0:
+            # Track scale to detect if optimizer step was skipped (inf/nan gradients)
+            old_scale = scaler.get_scale()
 
-        scaler.step(optimizer)
-        scaler.update()
+            scaler.step(optimizer)
+            scaler.update()
 
-        # Only step scheduler if optimizer actually stepped
-        # If scale decreased, gradients had inf/nan and step was skipped
-        if scheduler is not None and scaler.get_scale() >= old_scale:
-            scheduler.step()
+            # Only step scheduler if optimizer actually stepped
+            # If scale decreased, gradients had inf/nan and step was skipped
+            if scheduler is not None and scaler.get_scale() >= old_scale:
+                scheduler.step()
 
-        total_loss += loss.item()
-        loop.set_postfix(loss=loss.item())
+        # Track unscaled loss for logging
+        total_loss += loss.item() * accumulation_steps
+        loop.set_postfix(loss=loss.item() * accumulation_steps)
         global_step += 1
 
         if wandb_run and num_batches % log_every_n_steps == 0:
