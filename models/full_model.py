@@ -32,6 +32,14 @@ class ModelABaseline(nn.Module):
         # We might need a projector after masking if we change the flow
         self.logit_scale = self.backbone.clip_model.logit_scale
 
+        # Uncertainty weighting parameters (Kendall et al., 2018)
+        # log_var = log(σ²), initialized to 0 means σ² = 1
+        self.use_uncertainty_weighting = cfg['model'].get('use_uncertainty_weighting', False)
+        if self.use_uncertainty_weighting:
+            self.log_var_contrastive = nn.Parameter(torch.zeros(1))
+            if self.use_local_alignment:
+                self.log_var_local = nn.Parameter(torch.zeros(1))
+
     def forward(self, images, text):
         # 1. Get Raw Features (Batch, 197, 768)
         features = self.backbone.encode_image_patches(images)

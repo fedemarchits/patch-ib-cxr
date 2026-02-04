@@ -16,8 +16,11 @@ model:
   use_sparsity_loss: false
   # Local Alignment Configuration
   use_local_alignment: true
-  local_alignment_weight: 10
-  local_alignment_temperature: 0.1
+  local_alignment_temperature: 0.7
+  # Uncertainty weighting (Kendall et al., 2018) - automatically balances losses
+  use_uncertainty_weighting: true
+  # Fallback fixed weight settings (only used if use_uncertainty_weighting: false)
+  local_alignment_weight: 500
   local_alignment_warmup_steps: 2000
 
 training:
