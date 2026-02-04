@@ -35,7 +35,9 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
 
             if use_uncertainty:
                 # Uncertainty weighting: L * exp(-log_var) + log_var
-                loss_con = loss_con_raw * torch.exp(-model.log_var_contrastive) + model.log_var_contrastive
+                # Clamp log_var to [-6, 6] to prevent extreme weights
+                log_var_con = torch.clamp(model.log_var_contrastive, min=-2, max=2)
+                loss_con = loss_con_raw * torch.exp(-log_var_con) + log_var_con
             else:
                 loss_con = loss_con_raw
 
@@ -56,8 +58,9 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
                 loss_local_raw = local_criterion(patch_feat, token_feat, attn_mask)
 
                 if use_uncertainty and hasattr(model, 'log_var_local'):
-                    # Uncertainty weighting for local loss
-                    loss_local = loss_local_raw * torch.exp(-model.log_var_local) + model.log_var_local
+                    # Uncertainty weighting for local loss (clamped to prevent extreme weights)
+                    log_var_loc = torch.clamp(model.log_var_local, min=-2, max=2)
+                    loss_local = loss_local_raw * torch.exp(-log_var_loc) + log_var_loc
                     loss = loss + loss_local
                 else:
                     # Fixed weight with warmup (original behavior)

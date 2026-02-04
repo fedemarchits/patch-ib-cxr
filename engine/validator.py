@@ -24,7 +24,8 @@ def validate(model, dataloader, criterions, device, use_amp):
             loss_con_raw = contrastive_criterion(img_emb, txt_emb, model.logit_scale)
 
             if use_uncertainty:
-                loss = loss_con_raw * torch.exp(-model.log_var_contrastive) + model.log_var_contrastive
+                log_var_con = torch.clamp(model.log_var_contrastive, min=-2, max=2)
+                loss = loss_con_raw * torch.exp(-log_var_con) + log_var_con
             else:
                 loss = loss_con_raw
 
@@ -34,7 +35,8 @@ def validate(model, dataloader, criterions, device, use_amp):
                 loss_local_raw = local_criterion(patch_feat, token_feat, attn_mask)
 
                 if use_uncertainty and hasattr(model, 'log_var_local'):
-                    loss_local = loss_local_raw * torch.exp(-model.log_var_local) + model.log_var_local
+                    log_var_loc = torch.clamp(model.log_var_local, min=-2, max=2)
+                    loss_local = loss_local_raw * torch.exp(-log_var_loc) + log_var_loc
                     loss = loss + loss_local
                 else:
                     loss = loss + local_weight * loss_local_raw
