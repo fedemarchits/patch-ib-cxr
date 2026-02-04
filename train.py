@@ -147,42 +147,75 @@ def main():
         best_loss = float('inf')
         global_step = 0
 
+        # Early stopping: use retrieval metrics (higher is better) instead of loss
+        early_stopping_metric = cfg['training'].get('early_stopping_metric', 'loss')  # 'loss' or 'recall'
+        early_stopping_mode = 'min' if early_stopping_metric == 'loss' else 'max'
+
         early_stopping = EarlyStopping(
             patience=cfg['training'].get('early_stopping_patience', 5),
             checkpoint_path=os.path.join(args.output_dir, "best_model.pt"),
-            verbose=True
+            verbose=True,
+            mode=early_stopping_mode
         )
+
+        print(f"Early stopping on: {early_stopping_metric} (mode: {early_stopping_mode})")
 
         for epoch in range(cfg['training']['epochs']):
             # Train
             avg_train_loss, global_step = train_one_epoch(model, train_loader, optimizer, criterions, device, epoch, scaler, use_amp, wandb_run, scheduler=scheduler, global_step=global_step, accumulation_steps=accumulation_steps)
-            print(f"Epoch {epoch} Train Loss: {avg_train_loss}") 
-            
-            # (Optional) Validation Loop could go here
-            val_loss = validate(model, val_loader, criterions, device, use_amp)
+            print(f"Epoch {epoch} Train Loss: {avg_train_loss}")
 
-            print(f"Epoch {epoch} | Train Loss: {avg_train_loss:.4f} | Val Loss: {val_loss:.4f}")
+            # Validation with optional retrieval metrics
+            use_retrieval = early_stopping_metric == 'recall'
+            val_result = validate(model, val_loader, criterions, device, use_amp, compute_retrieval=use_retrieval)
 
-            early_stopping(val_loss, model, optimizer, epoch)
+            if use_retrieval:
+                val_loss, retrieval_metrics = val_result
+                mean_recall = retrieval_metrics['mean_recall']
+                print(f"Epoch {epoch} | Train Loss: {avg_train_loss:.4f} | Val Loss: {val_loss:.4f} | Mean R@K: {mean_recall:.2f}%")
+                print(f"  i2t: R@1={retrieval_metrics['i2t_R@1']:.2f}%, R@5={retrieval_metrics['i2t_R@5']:.2f}%, R@10={retrieval_metrics['i2t_R@10']:.2f}%")
+                print(f"  t2i: R@1={retrieval_metrics['t2i_R@1']:.2f}%, R@5={retrieval_metrics['t2i_R@5']:.2f}%, R@10={retrieval_metrics['t2i_R@10']:.2f}%")
+                early_stopping_value = mean_recall
+            else:
+                val_loss = val_result
+                retrieval_metrics = None
+                print(f"Epoch {epoch} | Train Loss: {avg_train_loss:.4f} | Val Loss: {val_loss:.4f}")
+                early_stopping_value = val_loss
+
+            early_stopping(early_stopping_value, model, optimizer, epoch)
 
             # Logging
             if wandb_run:
                 # Get current learning rate from optimizer
                 current_lr = optimizer.param_groups[0]['lr']
-                
+
                 # Get the learned temperature (logit_scale)
                 # CLIP uses exp(logit_scale) as the multiplier
                 with torch.no_grad():
                     temp = model.logit_scale.exp().item()
 
-                wandb_run.log({
-                    "epoch": epoch, 
+                log_dict = {
+                    "epoch": epoch,
                     "train/epoch_loss": avg_train_loss,
                     "val/loss": val_loss,
-                    "best_val_loss": early_stopping.best_loss,
                     "learning_rate": current_lr,
                     "model/temperature": temp
-                })
+                }
+
+                # Add retrieval metrics if computed
+                if retrieval_metrics is not None:
+                    log_dict["val/mean_recall"] = retrieval_metrics['mean_recall']
+                    log_dict["val/i2t_R@1"] = retrieval_metrics['i2t_R@1']
+                    log_dict["val/i2t_R@5"] = retrieval_metrics['i2t_R@5']
+                    log_dict["val/i2t_R@10"] = retrieval_metrics['i2t_R@10']
+                    log_dict["val/t2i_R@1"] = retrieval_metrics['t2i_R@1']
+                    log_dict["val/t2i_R@5"] = retrieval_metrics['t2i_R@5']
+                    log_dict["val/t2i_R@10"] = retrieval_metrics['t2i_R@10']
+                    log_dict["best_mean_recall"] = early_stopping.best_score
+                else:
+                    log_dict["best_val_loss"] = early_stopping.best_score
+
+                wandb_run.log(log_dict)
             if early_stopping.early_stop:
                 print(f"🛑 Early stopping triggered at epoch {epoch}")
                 break
