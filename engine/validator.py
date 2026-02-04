@@ -1,7 +1,7 @@
 import torch
 
 
-def compute_retrieval_metrics(img_emb, txt_emb, ks=[1, 5, 10]):
+def compute_retrieval_metrics(img_emb, txt_emb, ks=[1, 5, 10], debug=True):
     """
     Compute image-to-text and text-to-image retrieval metrics.
 
@@ -18,6 +18,15 @@ def compute_retrieval_metrics(img_emb, txt_emb, ks=[1, 5, 10]):
 
     N = sim_matrix.shape[0]
     metrics = {}
+
+    if debug:
+        # Debug: check embedding and similarity statistics
+        diag_sim = sim_matrix.diag()  # Correct pair similarities
+        off_diag_mask = ~torch.eye(N, dtype=torch.bool)
+        off_diag_sim = sim_matrix[off_diag_mask]  # Incorrect pair similarities
+        print(f"  [Retrieval Debug] N={N}, embed_dim={img_emb.shape[1]}")
+        print(f"  [Retrieval Debug] Diagonal (correct pairs) sim: mean={diag_sim.mean():.4f}, std={diag_sim.std():.4f}")
+        print(f"  [Retrieval Debug] Off-diagonal (wrong pairs) sim: mean={off_diag_sim.mean():.4f}, std={off_diag_sim.std():.4f}")
 
     # Image-to-text retrieval (each row is an image, find matching text)
     # Ground truth: diagonal (image i matches text i)
@@ -37,6 +46,10 @@ def compute_retrieval_metrics(img_emb, txt_emb, ks=[1, 5, 10]):
 
     i2t_ranks = torch.tensor(i2t_ranks, dtype=torch.float)
     t2i_ranks = torch.tensor(t2i_ranks, dtype=torch.float)
+
+    if debug:
+        print(f"  [Retrieval Debug] i2t ranks: median={i2t_ranks.median():.0f}, mean={i2t_ranks.mean():.1f}")
+        print(f"  [Retrieval Debug] t2i ranks: median={t2i_ranks.median():.0f}, mean={t2i_ranks.mean():.1f}")
 
     for k in ks:
         metrics[f'i2t_R@{k}'] = (i2t_ranks <= k).float().mean().item() * 100
