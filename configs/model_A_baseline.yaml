@@ -21,7 +21,7 @@ model:
 
 training:
   epochs: 40
-  lr: 5.0e-6
+  lr: 2.0e-5
   weight_decay: 0.01
   warmup_steps: 1000
   early_stopping_patience: 13
@@ -29,6 +29,9 @@ training:
   device: "cuda"
   use_amp: true
   gradient_accumulation_steps: 2
+  # Light fine-tuning options
+  freeze_backbone: false
+  llrd_factor: 0.85  # Layer-wise LR decay: early layers get 0.85x LR of next layer
 
 wandb:
   enable: true

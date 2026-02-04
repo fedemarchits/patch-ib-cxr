@@ -13,6 +13,7 @@ from data.dataset import create_dataloaders
 from engine.trainer import train_one_epoch
 from engine.utils import EarlyStopping
 from engine.validator import validate
+from engine.optimizer import create_optimizer
 
 def get_config(config_path):
     with open(config_path, "r") as f:
@@ -80,12 +81,8 @@ def main():
         if wandb_run:
             wandb.watch(model, log='all', log_freq=500)
 
-        # 4. Optimization
-        optimizer = torch.optim.AdamW(
-            model.parameters(),
-            lr=float(cfg['training']['lr']),
-            weight_decay=float(cfg['training'].get('weight_decay', 0.01))
-        )
+        # 4. Optimization (with LLRD or frozen backbone support)
+        optimizer = create_optimizer(model, cfg)
         
         # Losses
         # Make sure these classes exist in your src/models/ directory
