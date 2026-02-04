@@ -9,8 +9,8 @@ class ContrastiveLoss(nn.Module):
         self.cross_entropy = nn.CrossEntropyLoss()
 
     def forward(self, img_feat, text_feat, logit_scale):
-        # Scale logic from CLIP
-        logit_scale = logit_scale.exp()
+        # Scale logic from CLIP (clamp to prevent overflow, exp(4.6) ≈ 100)
+        logit_scale = torch.clamp(logit_scale, max=4.6).exp()
         
         # Cosine similarity
         logits_per_image = logit_scale * img_feat @ text_feat.t()

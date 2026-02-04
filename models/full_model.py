@@ -86,12 +86,12 @@ class ModelABaseline(nn.Module):
             raise AttributeError("Cannot project 768->512. Check logs.")
         # ==================================================================
 
-        # Normalize
-        img_embedding = img_embedding / (img_embedding.norm(dim=-1, keepdim=True) + 1e-6)
+        # Normalize (using F.normalize for numerical stability)
+        img_embedding = F.normalize(img_embedding, p=2, dim=-1)
 
         # Encode Text (pooled embedding for global loss)
         text_embedding = self.backbone.encode_text(text)
-        text_embedding = text_embedding / (text_embedding.norm(dim=-1, keepdim=True) + 1e-6)
+        text_embedding = F.normalize(text_embedding, p=2, dim=-1)
 
         # Local alignment features (if enabled)
         if self.use_local_alignment:

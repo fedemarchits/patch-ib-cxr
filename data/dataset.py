@@ -66,27 +66,6 @@ class MedicalImageTextDataset(Dataset):
 
 def get_transforms(is_train=True, img_size=224):
     """
-    Standard ImageNet normalization + Augmentation for training.
-    """
-    mean = [0.485, 0.456, 0.406]
-    std = [0.229, 0.224, 0.225]
-
-    if is_train:
-        return transforms.Compose([
-            transforms.RandomResizedCrop(img_size, scale=(0.9, 1.0)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=mean, std=std)
-        ])
-    else:
-        return transforms.Compose([
-            transforms.Resize(img_size),
-            transforms.CenterCrop(img_size),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=mean, std=std)
-        ])
-    
-def get_transforms(is_train=True, img_size=224):
-    """
     Upgraded transforms based on ConVIRT and BiomedCLIP literature.
     Focuses on clinical plausibility rather than standard ImageNet noise.
     """
