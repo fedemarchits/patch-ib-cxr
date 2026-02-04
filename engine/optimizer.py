@@ -30,17 +30,21 @@ def get_parameter_groups(model, base_lr, weight_decay=0.01, llrd_factor=0.9, fre
 
 def _get_frozen_backbone_groups(model, base_lr, weight_decay):
     """
-    Freeze backbone, only train projection head and other trainable components.
+    Freeze backbone (both ViT and BERT), only train logit_scale and other heads.
     """
-    # Freeze backbone
+    # Freeze entire backbone (ViT + BERT)
     for param in model.backbone.parameters():
         param.requires_grad = False
+
+    # Re-enable logit_scale (it's part of backbone but we want to train it)
+    if hasattr(model, 'logit_scale'):
+        model.logit_scale.requires_grad = True
 
     # Collect trainable parameters
     trainable_params = []
 
     # logit_scale
-    if hasattr(model, 'logit_scale') and model.logit_scale.requires_grad:
+    if hasattr(model, 'logit_scale'):
         trainable_params.append({
             'params': [model.logit_scale],
             'lr': base_lr,
