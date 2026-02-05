@@ -6,7 +6,8 @@ from sklearn.metrics import roc_auc_score
 
 
 def compute_validation_auc(model, train_loader, val_loader, device, use_amp=False,
-                           max_train_samples=2000, max_val_samples=1000, num_classes=14):
+                           max_train_samples=2000, max_val_samples=1000, num_classes=14,
+                           cfg=None):
     """
     Compute a lightweight AUC estimate for early stopping during training.
 
@@ -17,18 +18,45 @@ def compute_validation_auc(model, train_loader, val_loader, device, use_amp=Fals
 
     Args:
         model: The model to evaluate
-        train_loader: Training dataloader (needs to return labels as batch[2])
-        val_loader: Validation dataloader (needs to return labels as batch[2])
+        train_loader: Training dataloader (may or may not have labels)
+        val_loader: Validation dataloader (may or may not have labels)
         device: Device to use
         use_amp: Whether to use automatic mixed precision
         max_train_samples: Maximum training samples to use for fitting
         max_val_samples: Maximum validation samples for scoring
         num_classes: Number of classes for multi-label classification
+        cfg: Config dict - if provided, will create new dataloaders with labels
 
     Returns:
         mean_auc: Mean AUC across all classes
     """
     model.eval()
+
+    # Check if we need to create dataloaders with labels
+    # Try to get a batch and check if it has labels
+    sample_batch = None
+    for batch in train_loader:
+        if batch is not None:
+            sample_batch = batch
+            break
+
+    needs_label_loaders = sample_batch is None or len(sample_batch) < 3
+
+    if needs_label_loaders:
+        if cfg is None:
+            print("  [AUC] Warning: No labels in dataloader and no config provided to create new loaders")
+            return 0.0
+
+        # Import here to avoid circular imports
+        from data.dataset import create_dataloaders
+
+        print("  [AUC] Creating dataloaders with labels...")
+        train_loader_with_labels, val_loader_with_labels, _ = create_dataloaders(
+            cfg, return_labels=True
+        )
+    else:
+        train_loader_with_labels = train_loader
+        val_loader_with_labels = val_loader
 
     # Extract training embeddings and labels
     train_embs = []
@@ -36,11 +64,10 @@ def compute_validation_auc(model, train_loader, val_loader, device, use_amp=Fals
     n_train = 0
 
     with torch.no_grad():
-        for batch in train_loader:
+        for batch in train_loader_with_labels:
             if batch is None:
                 continue
             if len(batch) < 3:
-                # Skip if no labels
                 continue
 
             images, text, labels = batch[0].to(device), batch[1].to(device), batch[2]
@@ -69,7 +96,7 @@ def compute_validation_auc(model, train_loader, val_loader, device, use_amp=Fals
     n_val = 0
 
     with torch.no_grad():
-        for batch in val_loader:
+        for batch in val_loader_with_labels:
             if batch is None:
                 continue
             if len(batch) < 3:

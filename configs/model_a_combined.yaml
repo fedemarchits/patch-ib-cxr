@@ -25,7 +25,6 @@ training:
   early_stopping_metric: "combined"
 
   # Combined metric weights (must sum to 1.0)
-  # Higher recall weight since thesis focuses more on retrieval
   combined_weights:
     recall: 0.7
     auc: 0.3
@@ -37,7 +36,7 @@ training:
   lr: 5.0e-6
   weight_decay: 0.01
   warmup_steps: 1000
-  early_stopping_patience: 10
+  early_stopping_patience: 7
   print_freq: 50
   device: "cuda"
   use_amp: true

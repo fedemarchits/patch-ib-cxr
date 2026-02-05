@@ -199,7 +199,7 @@ def main():
             val_auc = None
             if use_auc and (epoch % eval_auc_every == 0 or epoch == cfg['training']['epochs'] - 1):
                 print(f"  Computing validation AUC...")
-                val_auc = compute_validation_auc(model, train_loader, val_loader, device, use_amp)
+                val_auc = compute_validation_auc(model, train_loader, val_loader, device, use_amp, cfg=cfg)
 
             # Print results
             print_parts = [f"Epoch {epoch}", f"Train Loss: {avg_train_loss:.4f}", f"Val Loss: {val_loss:.4f}"]
