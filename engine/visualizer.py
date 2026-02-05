@@ -8,10 +8,27 @@ import os
 import torch
 import torch.nn.functional as F
 import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.cm as cm
-from PIL import Image
 from tqdm import tqdm
+
+# Lazy imports for matplotlib (not required for training)
+plt = None
+cm = None
+
+
+def _ensure_matplotlib():
+    """Lazy import matplotlib when actually needed for visualization."""
+    global plt, cm
+    if plt is None:
+        try:
+            import matplotlib.pyplot as _plt
+            import matplotlib.cm as _cm
+            plt = _plt
+            cm = _cm
+        except ImportError:
+            raise ImportError(
+                "matplotlib is required for visualization. "
+                "Install it with: pip install matplotlib"
+            )
 
 
 def visualize_attention_samples(
@@ -41,6 +58,7 @@ def visualize_attention_samples(
         - attention_sample_{i}.png: Attention heatmap overlay
         - mask_sample_{i}.png: Patch importance mask (if masking enabled)
     """
+    _ensure_matplotlib()
     model.eval()
     os.makedirs(output_dir, exist_ok=True)
 
@@ -153,6 +171,7 @@ def save_mask_overlay(img_np, soft_mask, hard_mask, save_path, title="Patch Mask
         save_path: Path to save the figure
         title: Figure title
     """
+    _ensure_matplotlib()
     fig, axes = plt.subplots(1, 4, figsize=(20, 5))
 
     # 1. Original image
@@ -201,6 +220,7 @@ def save_attention_overlay(img_np, avg_attn, max_attn, save_path, title="Attenti
         save_path: Path to save the figure
         title: Figure title
     """
+    _ensure_matplotlib()
     fig, axes = plt.subplots(1, 4, figsize=(20, 5))
 
     # 1. Original image
@@ -282,6 +302,7 @@ def visualize_token_attention(
         tokens_to_show: Number of tokens to show per sample
         use_amp: Whether to use automatic mixed precision
     """
+    _ensure_matplotlib()
     model.eval()
     os.makedirs(output_dir, exist_ok=True)
 
