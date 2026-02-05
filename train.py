@@ -8,7 +8,7 @@ from torch.amp import GradScaler
 from torch.optim.lr_scheduler import LambdaLR
 
 from models.full_model import ModelABaseline
-from models.losses import ContrastiveLoss, SparsityLoss, LocalAlignmentLoss
+from models.losses import ContrastiveLoss, SparsityLoss, LocalAlignmentLoss, ConsistencyLoss
 from data.dataset import create_dataloaders
 from engine.trainer import train_one_epoch
 from engine.utils import EarlyStopping
@@ -98,7 +98,15 @@ def main():
             )
             criterions['local_weight'] = cfg['model'].get('local_alignment_weight', 0.1)
             criterions['local_warmup_steps'] = cfg['model'].get('local_alignment_warmup_steps', 0)
-        
+
+        # Add Patch-IB losses if masking is enabled
+        if cfg['model'].get('use_masking', False):
+            criterions['consistency'] = ConsistencyLoss(
+                include_negatives=cfg['model'].get('consistency_include_negatives', False)
+            )
+            criterions['consistency_weight'] = cfg['model'].get('consistency_weight', 1.0)
+            criterions['sparsity_weight'] = cfg['model'].get('sparsity_weight', 10.0)
+
         # GradScaler for mixed precision
         scaler = torch.amp.GradScaler(device, enabled=use_amp)
 
@@ -132,7 +140,7 @@ def main():
             images, text = batch[0].to(cfg['training']['device']), batch[1].to(cfg['training']['device'])
 
             print("   >> [Dry Run] Testing Model Forward Pass...")
-            img_emb, txt_emb, logits, local_features = model(images, text)
+            img_emb, txt_emb, logits, local_features, img_emb_full = model(images, text)
             
 
             loss = criterions['contrastive'](img_emb, txt_emb, model.logit_scale)

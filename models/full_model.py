@@ -4,6 +4,56 @@ import torch.nn.functional as F
 from .backbone import BiomedCLIPBackbone
 from .heads import PatchMaskingHead
 
+
+class LocalAlignModule(nn.Module):
+    """
+    Multi-head cross-attention for local alignment between patches and tokens.
+
+    From thesis Section 11.1:
+    - Query = text tokens (U)
+    - Key = image patches (V)
+    - Value = image patches (V)
+
+    Produces attention-weighted visual features aligned with each text token.
+    """
+    def __init__(self, d_model, n_heads=4, dropout=0.1):
+        super().__init__()
+        self.attn = nn.MultiheadAttention(
+            embed_dim=d_model,
+            num_heads=n_heads,
+            dropout=dropout,
+            batch_first=True
+        )
+        # Optional final projection (as in thesis)
+        self.out_proj = nn.Linear(d_model, d_model)
+
+    def forward(self, token_features, patch_features, key_padding_mask=None):
+        """
+        Args:
+            token_features: (B, L, D) - text token embeddings (queries)
+            patch_features: (B, M, D) - image patch embeddings (keys & values)
+            key_padding_mask: (B, M) - True for positions to mask (padding patches)
+
+        Returns:
+            aligned_features: (B, L, D) - attention-weighted visual features
+            attention_weights: (B, L, M) - attention weights for visualization
+        """
+        # Multi-head cross-attention: Q=tokens, K=V=patches
+        aligned_features, attention_weights = self.attn(
+            query=token_features,
+            key=patch_features,
+            value=patch_features,
+            key_padding_mask=key_padding_mask,
+            need_weights=True,
+            average_attn_weights=True  # Average across heads for visualization
+        )
+
+        # Final projection
+        aligned_features = self.out_proj(aligned_features)
+
+        return aligned_features, attention_weights
+
+
 class ModelABaseline(nn.Module):
     def __init__(self, cfg):
         super().__init__()
@@ -28,6 +78,14 @@ class ModelABaseline(nn.Module):
             self.patch_proj = nn.Linear(self.embed_dim, self.proj_dim)
             self.token_proj = nn.Linear(self.embed_dim, self.proj_dim)
 
+            # Multi-head cross-attention module (thesis Section 11.1)
+            n_heads = cfg['model'].get('local_alignment_n_heads', 4)
+            self.local_align = LocalAlignModule(
+                d_model=self.proj_dim,
+                n_heads=n_heads,
+                dropout=cfg['model'].get('local_alignment_dropout', 0.1)
+            )
+
         # Projectors (if needed, though BiomedCLIP has them built-in)
         # We might need a projector after masking if we change the flow
         self.logit_scale = self.backbone.clip_model.logit_scale
@@ -40,54 +98,61 @@ class ModelABaseline(nn.Module):
             if self.use_local_alignment:
                 self.log_var_local = nn.Parameter(torch.zeros(1))
 
+    def _project_embedding(self, embedding):
+        """Project embedding from 768 -> 512 using backbone's projection layer."""
+        visual_model = self.backbone.clip_model.visual
+
+        # CASE 1: Standard OpenAI CLIP (Matrix Multiplication)
+        if hasattr(visual_model, 'proj') and visual_model.proj is not None:
+            projection = visual_model.proj.to(embedding.dtype)
+            return embedding @ projection
+
+        # CASE 2: Timm/BiomedCLIP (Linear Layer)
+        elif hasattr(visual_model, 'head') and visual_model.head is not None:
+            return visual_model.head(embedding)
+
+        else:
+            print("CRITICAL ERROR: Could not find projection layer.")
+            print(f"Available attributes: {dir(visual_model)}")
+            raise AttributeError("Cannot project 768->512. Check logs.")
+
     def forward(self, images, text):
         # 1. Get Raw Features (Batch, 197, 768)
         features = self.backbone.encode_image_patches(images)
 
         importance_logits = None
         local_features = None  # Will hold (patch_feat, token_feat, attn_mask) if enabled
+        img_emb_full = None    # Full embedding (for Patch-IB consistency loss)
 
         # Extract CLS and patches
         cls_token = features[:, 0, :]      # (B, 768)
         patch_tokens = features[:, 1:, :]  # (B, 196, 768)
 
         if self.use_masking:
-            # 2. Generate Mask (The "Bottleneck")
-            # 1 = Keep, 0 = Drop
+            # ============ PATCH-IB: Dual-Path Forward ============
+            # Path 1: Full embedding (no masking) - for L_NCE_full and consistency
+            img_emb_full = self._project_embedding(cls_token)
+            img_emb_full = F.normalize(img_emb_full, p=2, dim=-1)
+
+            # Path 2: Masked embedding - for L_NCE_mask
+            # 2a. Generate Mask (The "Bottleneck")
             mask, importance_logits = self.mask_head(patch_tokens)
 
-            # 3. Apply Mask
+            # 2b. Apply Mask
             masked_patches = patch_tokens * mask.unsqueeze(-1)
 
-            # 4. Global Pooling of Masked Patches
+            # 2c. Global Pooling of Masked Patches
             mask_sum = mask.sum(dim=1, keepdim=True) + 1e-6
-            img_embedding = masked_patches.sum(dim=1) / mask_sum
+            img_embedding_768 = masked_patches.sum(dim=1) / mask_sum
+
+            # 2d. Project masked embedding
+            img_embedding = self._project_embedding(img_embedding_768)
+            img_embedding = F.normalize(img_embedding, p=2, dim=-1)
+            # =====================================================
         else:
-            # Model A: Take CLS token -> Shape: (Batch, 768)
-            img_embedding = cls_token
-
-        # ==================== FINAL FIX FOR BIOMEDCLIP ====================
-        visual_model = self.backbone.clip_model.visual
-
-        # CASE 1: Standard OpenAI CLIP (Matrix Multiplication)
-        if hasattr(visual_model, 'proj') and visual_model.proj is not None:
-            projection = visual_model.proj.to(img_embedding.dtype)
-            img_embedding = img_embedding @ projection
-
-        # CASE 2: Timm/BiomedCLIP (Linear Layer)
-        elif hasattr(visual_model, 'head') and visual_model.head is not None:
-            # .head is a nn.Linear(768, 512) layer. We just pass the data through it.
-            img_embedding = visual_model.head(img_embedding)
-
-        else:
-            # FALLBACK DEBUGGING (If both fail, we need to see what exists)
-            print("CRITICAL ERROR: Could not find projection layer.")
-            print(f"Available attributes: {dir(visual_model)}")
-            raise AttributeError("Cannot project 768->512. Check logs.")
-        # ==================================================================
-
-        # Normalize (using F.normalize for numerical stability)
-        img_embedding = F.normalize(img_embedding, p=2, dim=-1)
+            # Model A/B: Take CLS token -> Shape: (Batch, 768)
+            img_embedding = self._project_embedding(cls_token)
+            img_embedding = F.normalize(img_embedding, p=2, dim=-1)
 
         # Encode Text (pooled embedding for global loss)
         text_embedding = self.backbone.encode_text(text)
@@ -106,6 +171,20 @@ class ModelABaseline(nn.Module):
             patch_features = F.normalize(patch_features, dim=-1)
             token_features = F.normalize(token_features, dim=-1)
 
-            local_features = (patch_features, token_features, attention_mask)
+            # Multi-head cross-attention: align patches to tokens
+            # Query=tokens, Key/Value=patches
+            aligned_features, attn_weights = self.local_align(
+                token_features, patch_features
+            )
 
-        return img_embedding, text_embedding, importance_logits, local_features
+            # local_features now includes aligned features for loss computation
+            # Format: (patch_feat, token_feat, attention_mask, aligned_feat, attn_weights)
+            local_features = (patch_features, token_features, attention_mask, aligned_features, attn_weights)
+
+        # Return format:
+        # - img_embedding: masked if use_masking else full (main embedding for retrieval)
+        # - text_embedding: text embedding
+        # - importance_logits: mask logits (for sparsity loss)
+        # - local_features: (patch_feat, token_feat, attn_mask) or None
+        # - img_emb_full: full embedding if use_masking else None (for consistency loss)
+        return img_embedding, text_embedding, importance_logits, local_features, img_emb_full

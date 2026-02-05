@@ -73,7 +73,7 @@ def compute_validation_auc(model, train_loader, val_loader, device, use_amp=Fals
             images, text, labels = batch[0].to(device), batch[1].to(device), batch[2]
 
             with torch.amp.autocast(device_type=device, enabled=use_amp):
-                img_emb, _, _, _ = model(images, text)
+                img_emb, _, _, _, _ = model(images, text)
                 img_emb = F.normalize(img_emb.float(), dim=-1)
 
             train_embs.append(img_emb.cpu().numpy())
@@ -105,7 +105,7 @@ def compute_validation_auc(model, train_loader, val_loader, device, use_amp=Fals
             images, text, labels = batch[0].to(device), batch[1].to(device), batch[2]
 
             with torch.amp.autocast(device_type=device, enabled=use_amp):
-                img_emb, _, _, _ = model(images, text)
+                img_emb, _, _, _, _ = model(images, text)
                 img_emb = F.normalize(img_emb.float(), dim=-1)
 
             val_embs.append(img_emb.cpu().numpy())
@@ -245,7 +245,7 @@ def validate(model, dataloader, criterions, device, use_amp, compute_retrieval=F
         images, text = batch[0].to(device), batch[1].to(device)
 
         with torch.amp.autocast(device_type=device, enabled=use_amp):
-            img_emb, txt_emb, _, local_features = model(images, text)
+            img_emb, txt_emb, _, local_features, _ = model(images, text)
             loss_con_raw = contrastive_criterion(img_emb, txt_emb, model.logit_scale)
 
             if use_uncertainty:
@@ -256,8 +256,16 @@ def validate(model, dataloader, criterions, device, use_amp, compute_retrieval=F
 
             # Include local alignment loss if enabled
             if local_criterion is not None and local_features is not None:
-                patch_feat, token_feat, attn_mask = local_features
-                loss_local_raw = local_criterion(patch_feat, token_feat, attn_mask)
+                # Unpack local features (supports both old 3-tuple and new 5-tuple format)
+                if len(local_features) == 5:
+                    patch_feat, token_feat, attn_mask, aligned_feat, attn_weights = local_features
+                    loss_local_raw = local_criterion(
+                        patch_feat, token_feat, attn_mask,
+                        aligned_features=aligned_feat, attn_weights=attn_weights
+                    )
+                else:
+                    patch_feat, token_feat, attn_mask = local_features
+                    loss_local_raw = local_criterion(patch_feat, token_feat, attn_mask)
 
                 if use_uncertainty and hasattr(model, 'log_var_local'):
                     log_var_loc = torch.clamp(model.log_var_local, min=-2, max=2)

@@ -7,6 +7,7 @@ import os
 from models.full_model import ModelABaseline
 from data.dataset import create_dataloaders
 from engine.evaluator import Evaluator
+from engine.visualizer import visualize_attention_samples, visualize_token_attention
 
 # --- ENTRY POINT ---
 if __name__ == "__main__":
@@ -18,6 +19,9 @@ if __name__ == "__main__":
     parser.add_argument("--config", type=str, required=True)
     parser.add_argument("--checkpoint", type=str, default=None)
     parser.add_argument("--batch_size", type=int, default=32)
+    parser.add_argument("--visualize", action="store_true", help="Generate attention visualizations")
+    parser.add_argument("--num_vis_samples", type=int, default=10, help="Number of samples to visualize")
+    parser.add_argument("--output_dir", type=str, default="logs", help="Output directory for results")
     args = parser.parse_args()
     
     # 1. Setup
@@ -59,13 +63,39 @@ if __name__ == "__main__":
     
     # C. Classification (Linear Probe) <--- NEW TASK
     cls_metrics = evaluator.evaluate_classification()
-    
+
+    # D. Attention Visualizations (optional)
+    if args.visualize:
+        vis_dir = os.path.join(args.output_dir, "visualizations")
+        use_amp = cfg.get('training', {}).get('use_amp', False)
+
+        # Visualize attention masks and patch importance
+        visualize_attention_samples(
+            model=model,
+            dataloader=test_loader,
+            device=device,
+            output_dir=vis_dir,
+            num_samples=args.num_vis_samples,
+            use_amp=use_amp
+        )
+
+        # Visualize per-token attention (if local alignment enabled)
+        if cfg.get('model', {}).get('use_local_alignment', False):
+            visualize_token_attention(
+                model=model,
+                dataloader=test_loader,
+                device=device,
+                output_dir=vis_dir,
+                num_samples=min(5, args.num_vis_samples),
+                use_amp=use_amp
+            )
+
     # 5. Save
     final_results = {**eff_metrics, **ret_metrics, **cls_metrics}
-    
-    os.makedirs("logs", exist_ok=True)
-    with open("logs/eval_results.txt", "w") as f:
+
+    os.makedirs(args.output_dir, exist_ok=True)
+    with open(os.path.join(args.output_dir, "eval_results.txt"), "w") as f:
         f.write(str(final_results))
-        
-    print("\n[Done] Results saved to logs/eval_results.txt")
+
+    print(f"\n[Done] Results saved to {args.output_dir}/eval_results.txt")
     print(final_results)

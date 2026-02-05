@@ -21,6 +21,9 @@ model:
   use_uncertainty_weighting: false
   local_alignment_weight: 100
   local_alignment_warmup_steps: 500
+  # Multi-head cross-attention (thesis Section 11.1)
+  local_alignment_n_heads: 4
+  local_alignment_dropout: 0.1
 
 training:
   early_stopping_metric: "recall"

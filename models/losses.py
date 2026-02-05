@@ -43,43 +43,48 @@ class SparsityLoss(nn.Module):
 
 class LocalAlignmentLoss(nn.Module):
     """
-    Attention-based local alignment loss between image patches and text tokens.
+    Local alignment loss between attention-aligned visual features and text tokens.
 
-    For each text token, computes attention-weighted sum of image patches,
-    then measures MSE between aligned visual features and token embeddings.
+    Supports two modes:
+    1. Multi-head mode (default): Uses pre-computed aligned features from LocalAlignModule
+    2. Legacy single-head mode: Computes attention internally (backward compatible)
+
+    Loss: MSE between aligned visual features and token embeddings.
     """
-    def __init__(self, temperature=1.0):
+    def __init__(self, temperature=1.0, use_multihead=True):
         super().__init__()
         self.temperature = temperature
+        self.use_multihead = use_multihead
 
-    def forward(self, patch_features, token_features, attention_mask):
+    def forward(self, patch_features, token_features, attention_mask,
+                aligned_features=None, attn_weights=None):
         """
         Args:
             patch_features: (B, 196, D) - projected image patch embeddings
             token_features: (B, L, D) - projected text token embeddings
             attention_mask: (B, L) - 1 for valid tokens, 0 for padding
+            aligned_features: (B, L, D) - pre-computed aligned features (multi-head mode)
+            attn_weights: (B, L, 196) - attention weights (for logging/visualization)
 
         Returns:
             loss: scalar - masked MSE loss
         """
         B, L, D = token_features.shape
 
-        # Step 1: Compute attention scores
-        # (B, L, D) @ (B, D, 196) -> (B, L, 196)
-        scale = D ** 0.5
-        attention_scores = torch.bmm(
-            token_features, patch_features.transpose(1, 2)
-        ) / (scale * self.temperature)
+        if aligned_features is not None:
+            # Multi-head mode: use pre-computed aligned features
+            v_aligned = aligned_features
+        else:
+            # Legacy single-head mode: compute attention internally
+            scale = D ** 0.5
+            attention_scores = torch.bmm(
+                token_features, patch_features.transpose(1, 2)
+            ) / (scale * self.temperature)
 
-        # Step 2: Softmax over patches dimension
-        # (B, L, 196) -> attention distribution over patches for each token
-        attention_weights = F.softmax(attention_scores, dim=-1)
+            attention_weights = F.softmax(attention_scores, dim=-1)
+            v_aligned = torch.bmm(attention_weights, patch_features)
 
-        # Step 3: Compute text-aligned visual features
-        # (B, L, 196) @ (B, 196, D) -> (B, L, D)
-        v_aligned = torch.bmm(attention_weights, patch_features)
-
-        # Step 4: MSE loss with masking
+        # MSE loss with masking
         # Only compute loss for non-padding tokens
         mse_per_token = F.mse_loss(v_aligned, token_features, reduction='none')  # (B, L, D)
         mse_per_token = mse_per_token.mean(dim=-1)  # (B, L) - average over embedding dim
@@ -91,5 +96,56 @@ class LocalAlignmentLoss(nn.Module):
         # Average over valid tokens only
         num_valid_tokens = mask_expanded.sum() + 1e-6
         loss = masked_mse.sum() / num_valid_tokens
+
+        return loss
+
+
+class ConsistencyLoss(nn.Module):
+    """
+    Consistency loss between full and masked image-text similarities.
+
+    Ensures that the masked embeddings maintain similar discriminative power
+    as the full embeddings. From the Patch-IB framework:
+
+    L_cons = (s_ii(z) - s̄_ii)²
+
+    Where s_ii(z) is the similarity between masked image i and its text i,
+    and s̄_ii is the similarity between full image i and its text i.
+    """
+    def __init__(self, include_negatives=False):
+        """
+        Args:
+            include_negatives: If True, also penalize difference on negative pairs.
+                              If False (default), only penalize positive pairs.
+        """
+        super().__init__()
+        self.include_negatives = include_negatives
+
+    def forward(self, img_emb_full, img_emb_masked, text_emb, logit_scale):
+        """
+        Args:
+            img_emb_full: (B, D) - full image embeddings (no masking)
+            img_emb_masked: (B, D) - masked image embeddings
+            text_emb: (B, D) - text embeddings
+            logit_scale: learnable temperature parameter
+
+        Returns:
+            loss: scalar - consistency loss
+        """
+        # Compute temperature-scaled similarities
+        logit_scale = torch.clamp(logit_scale, max=4.6).exp()
+
+        # Similarity matrices
+        sim_full = logit_scale * img_emb_full @ text_emb.t()  # (B, B)
+        sim_masked = logit_scale * img_emb_masked @ text_emb.t()  # (B, B)
+
+        if self.include_negatives:
+            # MSE over entire similarity matrix
+            loss = F.mse_loss(sim_masked, sim_full)
+        else:
+            # MSE only on diagonal (positive pairs)
+            pos_sim_full = sim_full.diag()  # (B,)
+            pos_sim_masked = sim_masked.diag()  # (B,)
+            loss = F.mse_loss(pos_sim_masked, pos_sim_full)
 
         return loss

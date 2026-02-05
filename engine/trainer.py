@@ -11,6 +11,11 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
     local_weight_target = criterion.get('local_weight', 0.1)
     local_warmup_steps = criterion.get('local_warmup_steps', 0)
 
+    # Patch-IB specific losses and weights
+    consistency_criterion = criterion.get('consistency', None)
+    consistency_weight = criterion.get('consistency_weight', 1.0)
+    sparsity_weight = criterion.get('sparsity_weight', 10.0)
+
     loop = tqdm(dataloader, desc=f"Epoch {epoch}")
 
     for batch_idx, batch in enumerate(loop):
@@ -25,9 +30,10 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
             optimizer.zero_grad()
 
         with torch.amp.autocast(device_type=device, enabled=use_amp):
-            img_emb, txt_emb, logits, local_features = model(images, text)
+            # Model returns 5 values: img_emb (masked if use_masking), txt_emb, logits, local_features, img_emb_full
+            img_emb, txt_emb, logits, local_features, img_emb_full = model(images, text)
 
-            # Global contrastive loss
+            # Global contrastive loss (on masked embedding if Patch-IB, else on full)
             loss_con_raw = contrastive_criterion(img_emb, txt_emb, model.logit_scale)
 
             # Check if using uncertainty weighting (Kendall et al., 2018)
@@ -43,19 +49,49 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
 
             loss = loss_con
 
+            # ============ PATCH-IB LOSSES ============
+            # InfoNCE on full embeddings (if Patch-IB enabled)
+            loss_con_full_raw = None
+            loss_con_full = None
+            if img_emb_full is not None:
+                loss_con_full_raw = contrastive_criterion(img_emb_full, txt_emb, model.logit_scale)
+                if use_uncertainty:
+                    loss_con_full = loss_con_full_raw * torch.exp(-log_var_con) + log_var_con
+                else:
+                    loss_con_full = loss_con_full_raw
+                loss = loss + loss_con_full
+
             # Sparsity loss (if masking enabled)
             loss_sparse = None
             if logits is not None:
-                loss_sparse = sparsity_criterion(logits) * 10.0
+                loss_sparse = sparsity_criterion(logits) * sparsity_weight
                 loss = loss + loss_sparse
+
+            # Consistency loss (if Patch-IB enabled)
+            loss_consistency = None
+            if consistency_criterion is not None and img_emb_full is not None:
+                loss_consistency = consistency_criterion(
+                    img_emb_full, img_emb, txt_emb, model.logit_scale
+                ) * consistency_weight
+                loss = loss + loss_consistency
+            # =========================================
 
             # Local alignment loss (if enabled)
             loss_local = None
             loss_local_raw = None
             local_weight = 0.0
             if local_criterion is not None and local_features is not None:
-                patch_feat, token_feat, attn_mask = local_features
-                loss_local_raw = local_criterion(patch_feat, token_feat, attn_mask)
+                # Unpack local features (supports both old 3-tuple and new 5-tuple format)
+                if len(local_features) == 5:
+                    patch_feat, token_feat, attn_mask, aligned_feat, attn_weights = local_features
+                    loss_local_raw = local_criterion(
+                        patch_feat, token_feat, attn_mask,
+                        aligned_features=aligned_feat, attn_weights=attn_weights
+                    )
+                else:
+                    # Legacy 3-tuple format (backward compatible)
+                    patch_feat, token_feat, attn_mask = local_features
+                    loss_local_raw = local_criterion(patch_feat, token_feat, attn_mask)
 
                 if use_uncertainty and hasattr(model, 'log_var_local'):
                     # Uncertainty weighting for local loss (clamped to prevent extreme weights)
@@ -92,7 +128,15 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
 
         # Track unscaled loss for logging
         total_loss += loss.item() * accumulation_steps
-        loop.set_postfix(loss=loss.item() * accumulation_steps)
+
+        # Progress bar with sparsity info if masking enabled
+        postfix_dict = {"loss": loss.item() * accumulation_steps}
+        if logits is not None:
+            with torch.no_grad():
+                kept_ratio = (logits > 0).float().mean().item()
+                postfix_dict["kept"] = f"{kept_ratio:.1%}"
+        loop.set_postfix(**postfix_dict)
+
         global_step += 1
 
         if wandb_run and num_batches % log_every_n_steps == 0:
@@ -103,6 +147,30 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
             }
             if loss_sparse is not None:
                 log_dict["train/sparsity_loss"] = loss_sparse.item()
+
+            # Sparsity tracking (actual mask statistics)
+            if logits is not None:
+                with torch.no_grad():
+                    # Compute mask probabilities (sigmoid of logits)
+                    mask_probs = torch.sigmoid(logits)
+                    # Mean activation (average probability of keeping a patch)
+                    mean_activation = mask_probs.mean().item()
+                    # Sparsity ratio (% of patches with prob > 0.5, i.e., "kept")
+                    hard_mask = (logits > 0).float()
+                    patches_kept_ratio = hard_mask.mean().item()
+                    # Number of patches kept per image (out of 196)
+                    patches_kept_per_image = hard_mask.sum(dim=1).mean().item()
+
+                    log_dict["mask/mean_activation"] = mean_activation
+                    log_dict["mask/patches_kept_ratio"] = patches_kept_ratio
+                    log_dict["mask/patches_kept_per_image"] = patches_kept_per_image
+                    log_dict["mask/patches_dropped_ratio"] = 1.0 - patches_kept_ratio
+
+            # Patch-IB specific logging
+            if loss_con_full_raw is not None:
+                log_dict["train/contrastive_full_loss_raw"] = loss_con_full_raw.item()
+            if loss_consistency is not None:
+                log_dict["train/consistency_loss"] = loss_consistency.item()
 
             # Log uncertainty weighting parameters
             if use_uncertainty:
