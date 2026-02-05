@@ -20,8 +20,9 @@ model:
   local_alignment_temperature: 0.7
 
 training:
+  early_stopping_metric: "recall"
   epochs: 40
-  lr: 2.0e-5
+  lr: 5.0e-6
   weight_decay: 0.01
   warmup_steps: 1000
   early_stopping_patience: 13
@@ -31,7 +32,7 @@ training:
   gradient_accumulation_steps: 2
   # Light fine-tuning options
   freeze_backbone: false
-  llrd_factor: 0.85  # Layer-wise LR decay: early layers get 0.85x LR of next layer
+  llrd_factor: 0.85 # Layer-wise LR decay: early layers get 0.85x LR of next layer
 
 wandb:
   enable: true

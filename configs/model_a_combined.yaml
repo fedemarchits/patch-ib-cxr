@@ -1,9 +1,9 @@
-experiment_name: "model_b_local_alignment"
+experiment_name: "model_a_combined_metric"
 
 data:
   json_path: "/workspace/mimic_moro232_stratified.jsonl"
   image_root: "/datasets/MIMIC-CXR/files"
-  batch_size: 64
+  batch_size: 96
   num_workers: 4
   image_size: 224
 
@@ -14,21 +14,30 @@ model:
   temperature: 0.1
   use_masking: false
   use_sparsity_loss: false
-  # Local Alignment Configuration
-  use_local_alignment: true
+
+  use_local_alignment: false
+  local_alignment_weight: 0.1
   local_alignment_temperature: 0.7
-  # Disable uncertainty weighting for now, use fixed weight
-  use_uncertainty_weighting: false
-  local_alignment_weight: 100
-  local_alignment_warmup_steps: 500
 
 training:
-  early_stopping_metric: "recall"
+  # Early stopping on combined metric (recall + AUC)
+  # Options: 'loss', 'recall', 'auc', 'combined'
+  early_stopping_metric: "combined"
+
+  # Combined metric weights (must sum to 1.0)
+  # Higher recall weight since thesis focuses more on retrieval
+  combined_weights:
+    recall: 0.7
+    auc: 0.3
+
+  # How often to compute AUC (every N epochs, since it's slower)
+  eval_auc_every: 1
+
   epochs: 40
   lr: 5.0e-6
   weight_decay: 0.01
   warmup_steps: 1000
-  early_stopping_patience: 7
+  early_stopping_patience: 10
   print_freq: 50
   device: "cuda"
   use_amp: true
@@ -40,4 +49,4 @@ training:
 wandb:
   enable: true
   project: "Thesis-PatchIB"
-  run_name: "model-b-local-alignment"
+  run_name: "model-a-combined-metric"

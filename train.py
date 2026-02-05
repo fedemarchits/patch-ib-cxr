@@ -12,7 +12,7 @@ from models.losses import ContrastiveLoss, SparsityLoss, LocalAlignmentLoss
 from data.dataset import create_dataloaders
 from engine.trainer import train_one_epoch
 from engine.utils import EarlyStopping
-from engine.validator import validate
+from engine.validator import validate, compute_validation_auc
 from engine.optimizer import create_optimizer
 
 def get_config(config_path):
@@ -147,9 +147,21 @@ def main():
         best_loss = float('inf')
         global_step = 0
 
-        # Early stopping: use retrieval metrics (higher is better) instead of loss
-        early_stopping_metric = cfg['training'].get('early_stopping_metric', 'loss')  # 'loss' or 'recall'
-        early_stopping_mode = 'min' if early_stopping_metric == 'loss' else 'max'
+        # Early stopping configuration
+        # Options: 'loss', 'recall', 'auc', 'combined'
+        early_stopping_metric = cfg['training'].get('early_stopping_metric', 'loss')
+
+        # For combined metrics, get weights (default: 70% recall, 30% AUC)
+        combined_weights = cfg['training'].get('combined_weights', {'recall': 0.7, 'auc': 0.3})
+
+        # AUC evaluation frequency (every N epochs, since it's slower)
+        eval_auc_every = cfg['training'].get('eval_auc_every', 1)
+
+        # Determine early stopping mode
+        if early_stopping_metric == 'loss':
+            early_stopping_mode = 'min'
+        else:
+            early_stopping_mode = 'max'  # recall, auc, combined are all "higher is better"
 
         early_stopping = EarlyStopping(
             patience=cfg['training'].get('early_stopping_patience', 5),
@@ -159,30 +171,76 @@ def main():
         )
 
         print(f"Early stopping on: {early_stopping_metric} (mode: {early_stopping_mode})")
+        if early_stopping_metric == 'combined':
+            print(f"  Combined weights: recall={combined_weights['recall']}, auc={combined_weights['auc']}")
+            print(f"  AUC evaluation frequency: every {eval_auc_every} epochs")
 
         for epoch in range(cfg['training']['epochs']):
             # Train
             avg_train_loss, global_step = train_one_epoch(model, train_loader, optimizer, criterions, device, epoch, scaler, use_amp, wandb_run, scheduler=scheduler, global_step=global_step, accumulation_steps=accumulation_steps)
             print(f"Epoch {epoch} Train Loss: {avg_train_loss}")
 
-            # Validation with optional retrieval metrics
-            use_retrieval = early_stopping_metric == 'recall'
+            # Validation with optional retrieval metrics and AUC
+            use_retrieval = early_stopping_metric in ['recall', 'combined']
+            use_auc = early_stopping_metric in ['auc', 'combined']
+
+            # Compute validation loss and optionally retrieval metrics
             val_result = validate(model, val_loader, criterions, device, use_amp, compute_retrieval=use_retrieval)
 
             if use_retrieval:
                 val_loss, retrieval_metrics = val_result
                 mean_recall = retrieval_metrics['mean_recall']
-                print(f"Epoch {epoch} | Train Loss: {avg_train_loss:.4f} | Val Loss: {val_loss:.4f} | Mean R@K: {mean_recall:.2f}%")
-                print(f"  i2t: R@1={retrieval_metrics['i2t_R@1']:.2f}%, R@5={retrieval_metrics['i2t_R@5']:.2f}%, R@10={retrieval_metrics['i2t_R@10']:.2f}%")
-                print(f"  t2i: R@1={retrieval_metrics['t2i_R@1']:.2f}%, R@5={retrieval_metrics['t2i_R@5']:.2f}%, R@10={retrieval_metrics['t2i_R@10']:.2f}%")
-                early_stopping_value = mean_recall
             else:
                 val_loss = val_result
                 retrieval_metrics = None
-                print(f"Epoch {epoch} | Train Loss: {avg_train_loss:.4f} | Val Loss: {val_loss:.4f}")
-                early_stopping_value = val_loss
+                mean_recall = None
 
-            early_stopping(early_stopping_value, model, optimizer, epoch)
+            # Compute AUC if needed (can be expensive, so optionally skip some epochs)
+            val_auc = None
+            if use_auc and (epoch % eval_auc_every == 0 or epoch == cfg['training']['epochs'] - 1):
+                print(f"  Computing validation AUC...")
+                val_auc = compute_validation_auc(model, train_loader, val_loader, device, use_amp)
+
+            # Print results
+            print_parts = [f"Epoch {epoch}", f"Train Loss: {avg_train_loss:.4f}", f"Val Loss: {val_loss:.4f}"]
+            if mean_recall is not None:
+                print_parts.append(f"Mean R@K: {mean_recall:.2f}%")
+            if val_auc is not None:
+                print_parts.append(f"Val AUC: {val_auc:.4f}")
+            print(" | ".join(print_parts))
+
+            if retrieval_metrics is not None:
+                print(f"  i2t: R@1={retrieval_metrics['i2t_R@1']:.2f}%, R@5={retrieval_metrics['i2t_R@5']:.2f}%, R@10={retrieval_metrics['i2t_R@10']:.2f}%")
+                print(f"  t2i: R@1={retrieval_metrics['t2i_R@1']:.2f}%, R@5={retrieval_metrics['t2i_R@5']:.2f}%, R@10={retrieval_metrics['t2i_R@10']:.2f}%")
+
+            # Determine early stopping value based on metric
+            if early_stopping_metric == 'loss':
+                early_stopping_value = val_loss
+            elif early_stopping_metric == 'recall':
+                early_stopping_value = mean_recall
+            elif early_stopping_metric == 'auc':
+                if val_auc is not None:
+                    early_stopping_value = val_auc * 100  # Scale to match recall range
+                else:
+                    # Skip early stopping check on epochs without AUC computation
+                    early_stopping_value = None
+            elif early_stopping_metric == 'combined':
+                if val_auc is not None and mean_recall is not None:
+                    # Combined metric: weighted average of recall and AUC
+                    # Scale AUC to 0-100 range to match recall
+                    auc_scaled = val_auc * 100
+                    early_stopping_value = (
+                        combined_weights['recall'] * mean_recall +
+                        combined_weights['auc'] * auc_scaled
+                    )
+                    print(f"  Combined metric: {early_stopping_value:.2f} (recall={mean_recall:.2f}*{combined_weights['recall']} + AUC={auc_scaled:.2f}*{combined_weights['auc']})")
+                else:
+                    # If AUC wasn't computed this epoch, skip early stopping check
+                    early_stopping_value = None
+
+            # Only check early stopping if we have a valid metric value
+            if early_stopping_value is not None:
+                early_stopping(early_stopping_value, model, optimizer, epoch)
 
             # Logging
             if wandb_run:
@@ -211,9 +269,25 @@ def main():
                     log_dict["val/t2i_R@1"] = retrieval_metrics['t2i_R@1']
                     log_dict["val/t2i_R@5"] = retrieval_metrics['t2i_R@5']
                     log_dict["val/t2i_R@10"] = retrieval_metrics['t2i_R@10']
-                    log_dict["best_mean_recall"] = early_stopping.best_score
-                else:
-                    log_dict["best_val_loss"] = early_stopping.best_score
+
+                # Add AUC if computed
+                if val_auc is not None:
+                    log_dict["val/auc"] = val_auc
+
+                # Add combined metric if applicable
+                if early_stopping_metric == 'combined' and early_stopping_value is not None:
+                    log_dict["val/combined_metric"] = early_stopping_value
+
+                # Log best score based on metric type
+                if early_stopping.best_score is not None:
+                    if early_stopping_metric == 'loss':
+                        log_dict["best_val_loss"] = early_stopping.best_score
+                    elif early_stopping_metric == 'recall':
+                        log_dict["best_mean_recall"] = early_stopping.best_score
+                    elif early_stopping_metric == 'auc':
+                        log_dict["best_val_auc"] = early_stopping.best_score / 100  # Unscale
+                    elif early_stopping_metric == 'combined':
+                        log_dict["best_combined_metric"] = early_stopping.best_score
 
                 wandb_run.log(log_dict)
             if early_stopping.early_stop:

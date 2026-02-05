@@ -1,4 +1,127 @@
 import torch
+import torch.nn.functional as F
+import numpy as np
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import roc_auc_score
+
+
+def compute_validation_auc(model, train_loader, val_loader, device, use_amp=False,
+                           max_train_samples=2000, max_val_samples=1000, num_classes=14):
+    """
+    Compute a lightweight AUC estimate for early stopping during training.
+
+    This is a faster version of full evaluation that:
+    - Uses a subset of training data for fitting classifiers
+    - Uses validation set (not test set) for scoring
+    - Uses fewer LogisticRegression iterations
+
+    Args:
+        model: The model to evaluate
+        train_loader: Training dataloader (needs to return labels as batch[2])
+        val_loader: Validation dataloader (needs to return labels as batch[2])
+        device: Device to use
+        use_amp: Whether to use automatic mixed precision
+        max_train_samples: Maximum training samples to use for fitting
+        max_val_samples: Maximum validation samples for scoring
+        num_classes: Number of classes for multi-label classification
+
+    Returns:
+        mean_auc: Mean AUC across all classes
+    """
+    model.eval()
+
+    # Extract training embeddings and labels
+    train_embs = []
+    train_labels = []
+    n_train = 0
+
+    with torch.no_grad():
+        for batch in train_loader:
+            if batch is None:
+                continue
+            if len(batch) < 3:
+                # Skip if no labels
+                continue
+
+            images, text, labels = batch[0].to(device), batch[1].to(device), batch[2]
+
+            with torch.amp.autocast(device_type=device, enabled=use_amp):
+                img_emb, _, _, _ = model(images, text)
+                img_emb = F.normalize(img_emb.float(), dim=-1)
+
+            train_embs.append(img_emb.cpu().numpy())
+            train_labels.append(labels.numpy())
+            n_train += images.size(0)
+
+            if n_train >= max_train_samples:
+                break
+
+    if not train_embs:
+        print("  [AUC] Warning: No training samples with labels found")
+        return 0.0
+
+    train_embs = np.concatenate(train_embs, axis=0)
+    train_labels = np.concatenate(train_labels, axis=0)
+
+    # Extract validation embeddings and labels
+    val_embs = []
+    val_labels = []
+    n_val = 0
+
+    with torch.no_grad():
+        for batch in val_loader:
+            if batch is None:
+                continue
+            if len(batch) < 3:
+                continue
+
+            images, text, labels = batch[0].to(device), batch[1].to(device), batch[2]
+
+            with torch.amp.autocast(device_type=device, enabled=use_amp):
+                img_emb, _, _, _ = model(images, text)
+                img_emb = F.normalize(img_emb.float(), dim=-1)
+
+            val_embs.append(img_emb.cpu().numpy())
+            val_labels.append(labels.numpy())
+            n_val += images.size(0)
+
+            if n_val >= max_val_samples:
+                break
+
+    if not val_embs:
+        print("  [AUC] Warning: No validation samples with labels found")
+        return 0.0
+
+    val_embs = np.concatenate(val_embs, axis=0)
+    val_labels = np.concatenate(val_labels, axis=0)
+
+    print(f"  [AUC] Train samples: {train_embs.shape[0]}, Val samples: {val_embs.shape[0]}")
+
+    # Train lightweight linear classifiers
+    aucs = []
+    for i in range(num_classes):
+        y_train = train_labels[:, i]
+        y_val = val_labels[:, i]
+
+        # Skip if no positive samples in train or val
+        if y_train.sum() == 0 or y_val.sum() == 0:
+            continue
+
+        # Use fewer iterations for speed
+        clf = LogisticRegression(max_iter=200, solver='lbfgs', class_weight='balanced', n_jobs=-1)
+        try:
+            clf.fit(train_embs, y_train)
+            y_pred_proba = clf.predict_proba(val_embs)[:, 1]
+            auc = roc_auc_score(y_val, y_pred_proba)
+            aucs.append(auc)
+        except Exception:
+            # Skip classes that fail (e.g., too few samples)
+            continue
+
+    mean_auc = np.mean(aucs) if aucs else 0.0
+    print(f"  [AUC] Mean AUC: {mean_auc:.4f} (from {len(aucs)} classes)")
+
+    return mean_auc
 
 
 def compute_retrieval_metrics(img_emb, txt_emb, ks=[1, 5, 10], debug=True):

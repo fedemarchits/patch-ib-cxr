@@ -32,10 +32,11 @@ class EarlyStopping:
         """
         if self.best_score is None:
             self.best_score = val_metric
-            self.save_checkpoint(val_metric, model, optimizer, epoch)
+            self.save_checkpoint(val_metric, model, optimizer, epoch, is_first=True)
         elif self._is_improvement(val_metric):
+            old_score = self.best_score
             self.best_score = val_metric
-            self.save_checkpoint(val_metric, model, optimizer, epoch)
+            self.save_checkpoint(val_metric, model, optimizer, epoch, old_score=old_score)
             self.counter = 0
         else:
             self.counter += 1
@@ -53,11 +54,14 @@ class EarlyStopping:
             # Higher is better (for recall, accuracy, etc.)
             return val_metric > self.best_score + self.min_delta
 
-    def save_checkpoint(self, val_metric, model, optimizer=None, epoch=None):
+    def save_checkpoint(self, val_metric, model, optimizer=None, epoch=None, is_first=False, old_score=None):
         """Saves model when validation metric improves."""
         if self.verbose:
-            direction = "decreased" if self.mode == 'min' else "increased"
-            print(f"Validation metric {direction} ({self.best_score:.4f} -> {val_metric:.4f}). Saving model to {self.checkpoint_path}")
+            if is_first:
+                print(f"First validation metric: {val_metric:.4f}. Saving model to {self.checkpoint_path}")
+            else:
+                direction = "decreased" if self.mode == 'min' else "increased"
+                print(f"Validation metric {direction} ({old_score:.4f} -> {val_metric:.4f}). Saving model to {self.checkpoint_path}")
 
         checkpoint = {
             'model_state_dict': model.state_dict(),

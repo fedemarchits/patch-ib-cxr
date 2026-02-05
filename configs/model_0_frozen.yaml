@@ -17,6 +17,7 @@ model:
   use_local_alignment: false
 
 training:
+  early_stopping_metric: "recall"
   epochs: 10
   lr: 1.0e-2
   weight_decay: 0.0
