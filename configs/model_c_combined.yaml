@@ -63,6 +63,6 @@ training:
   llrd_factor: 0.85
 
 wandb:
-  enable: false  # Set to true after configuring WANDB_API_KEY
+  enable: true
   project: "Thesis-PatchIB"
   run_name: "model-c-combined-metric"

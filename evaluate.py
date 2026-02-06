@@ -39,7 +39,7 @@ if __name__ == "__main__":
 
     if args.checkpoint:
         print(f"Running evaluation on {device} using checkpoint: {args.checkpoint}")
-        checkpoint = torch.load(args.checkpoint, map_location=device)
+        checkpoint = torch.load(args.checkpoint, map_location=device, weights_only=False)
         # Handle state dict vs full checkpoint
         state_dict = checkpoint.get("model_state_dict", checkpoint)
         model.load_state_dict(state_dict, strict=False)
