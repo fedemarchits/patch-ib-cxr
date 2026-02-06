@@ -95,6 +95,15 @@ def _get_frozen_backbone_groups(model, base_lr, weight_decay):
             'name': 'mask_head'
         })
 
+    # Local alignment module (if present)
+    if hasattr(model, 'local_align'):
+        trainable_params.append({
+            'params': list(model.local_align.parameters()),
+            'lr': base_lr,
+            'weight_decay': weight_decay,
+            'name': 'local_align'
+        })
+
     return trainable_params
 
 

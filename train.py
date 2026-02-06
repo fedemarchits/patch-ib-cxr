@@ -13,7 +13,7 @@ from data.dataset import create_dataloaders
 from engine.trainer import train_one_epoch
 from engine.utils import EarlyStopping
 from engine.validator import validate, compute_validation_auc
-from engine.optimizer import create_optimizer
+from engine.optimizer import create_optimizer, get_parameter_groups
 
 def get_config(config_path):
     with open(config_path, "r") as f:
@@ -30,6 +30,24 @@ def get_cosine_schedule_with_warmup(optimizer, num_warmup_steps, num_training_st
         return max(0.0, 0.5 * (1.0 + math.cos(math.pi * progress)))
 
     return LambdaLR(optimizer, lr_lambda)
+
+
+def unfreeze_backbone(model):
+    """
+    Unfreeze all backbone parameters for fine-tuning phase.
+    """
+    for param in model.backbone.parameters():
+        param.requires_grad = True
+
+    # Count trainable params after unfreezing
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total = sum(p.numel() for p in model.parameters())
+    print(f"\n{'='*60}")
+    print("BACKBONE UNFROZEN - Starting Fine-tuning Phase")
+    print(f"{'='*60}")
+    print(f"  Trainable parameters: {trainable:,}")
+    print(f"  Total parameters:     {total:,}")
+    print(f"{'='*60}\n")
 
 def main():
     parser = argparse.ArgumentParser(description="Main training script")
@@ -81,9 +99,33 @@ def main():
         if wandb_run:
             wandb.watch(model, log='all', log_freq=500)
 
-        # 4. Optimization (with LLRD or frozen backbone support)
-        optimizer = create_optimizer(model, cfg)
-        
+        # 4. Optimization
+        # Check for staged training configuration
+        staged_training = cfg['training'].get('staged_training', False)
+        warmup_epochs = cfg['training'].get('warmup_epochs', 3)
+        warmup_lr = cfg['training'].get('warmup_lr', 1e-4)
+
+        if staged_training:
+            print(f"\n{'='*60}")
+            print("STAGED TRAINING ENABLED")
+            print(f"{'='*60}")
+            print(f"  Phase 1: {warmup_epochs} epochs with frozen backbone (lr={warmup_lr:.2e})")
+            print(f"  Phase 2: Fine-tuning with LLRD (lr={cfg['training']['lr']:.2e})")
+            print(f"{'='*60}\n")
+
+            # Phase 1: Create optimizer with frozen backbone
+            # Temporarily override config for warmup phase
+            warmup_cfg = cfg.copy()
+            warmup_cfg['training'] = cfg['training'].copy()
+            warmup_cfg['training']['freeze_backbone'] = True
+            warmup_cfg['training']['lr'] = warmup_lr
+            optimizer = create_optimizer(model, warmup_cfg)
+            current_phase = 1
+        else:
+            # Standard training (with LLRD or frozen backbone as configured)
+            optimizer = create_optimizer(model, cfg)
+            current_phase = 0  # No staged training
+
         # Losses
         # Make sure these classes exist in your src/models/ directory
         criterions = {
@@ -114,11 +156,18 @@ def main():
         accumulation_steps = cfg['training'].get('gradient_accumulation_steps', 1)
 
         # Learning rate scheduler with warmup
-        # Adjust training steps for gradient accumulation (fewer optimizer steps)
-        num_training_steps = (len(train_loader) * cfg['training']['epochs']) // accumulation_steps
-        num_warmup_steps = cfg['training'].get('warmup_steps', 500)
-        scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps, num_training_steps)
-        print(f"Scheduler: {num_warmup_steps} warmup steps, {num_training_steps} total steps")
+        # For staged training, we'll recreate the scheduler after phase transition
+        if staged_training:
+            # Phase 1 scheduler: just for warmup epochs
+            warmup_phase_steps = (len(train_loader) * warmup_epochs) // accumulation_steps
+            num_warmup_steps = min(cfg['training'].get('warmup_steps', 500), warmup_phase_steps // 2)
+            scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps, warmup_phase_steps)
+            print(f"Phase 1 Scheduler: {num_warmup_steps} warmup steps, {warmup_phase_steps} total steps")
+        else:
+            num_training_steps = (len(train_loader) * cfg['training']['epochs']) // accumulation_steps
+            num_warmup_steps = cfg['training'].get('warmup_steps', 500)
+            scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps, num_training_steps)
+            print(f"Scheduler: {num_warmup_steps} warmup steps, {num_training_steps} total steps")
         print(f"Gradient accumulation: {accumulation_steps} steps (effective batch size: {cfg['data']['batch_size'] * accumulation_steps})")
 
         ######## DEBUG CODE ########
@@ -184,6 +233,32 @@ def main():
             print(f"  AUC evaluation frequency: every {eval_auc_every} epochs")
 
         for epoch in range(cfg['training']['epochs']):
+            # Check for phase transition (staged training)
+            if staged_training and current_phase == 1 and epoch == warmup_epochs:
+                print(f"\n{'='*60}")
+                print(f"PHASE TRANSITION: Epoch {epoch}")
+                print(f"{'='*60}")
+
+                # Unfreeze backbone
+                unfreeze_backbone(model)
+
+                # Create new optimizer with LLRD for fine-tuning
+                optimizer = create_optimizer(model, cfg)
+
+                # Create new scheduler for remaining epochs
+                remaining_epochs = cfg['training']['epochs'] - warmup_epochs
+                remaining_steps = (len(train_loader) * remaining_epochs) // accumulation_steps
+                num_warmup_steps = cfg['training'].get('warmup_steps', 500)
+                scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps, remaining_steps)
+                print(f"Phase 2 Scheduler: {num_warmup_steps} warmup steps, {remaining_steps} total steps")
+
+                # Reset global step for the new scheduler
+                global_step = 0
+                current_phase = 2
+
+                if wandb_run:
+                    wandb_run.log({"training/phase": 2, "epoch": epoch})
+
             # Train
             avg_train_loss, global_step = train_one_epoch(model, train_loader, optimizer, criterions, device, epoch, scaler, use_amp, wandb_run, scheduler=scheduler, global_step=global_step, accumulation_steps=accumulation_steps)
             print(f"Epoch {epoch} Train Loss: {avg_train_loss}")
@@ -267,6 +342,10 @@ def main():
                     "learning_rate": current_lr,
                     "model/temperature": temp
                 }
+
+                # Log training phase for staged training
+                if staged_training:
+                    log_dict["training/phase"] = current_phase
 
                 # Add retrieval metrics if computed
                 if retrieval_metrics is not None:
