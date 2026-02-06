@@ -34,12 +34,7 @@ if __name__ == "__main__":
     else:
         device = config_device
 
-    # 2. Load Data FIRST (before checkpoint to avoid tokenizer conflicts)
-    # We need train_loader to train the classification head!
-    print("Loading Data...")
-    train_loader, _, test_loader = create_dataloaders(cfg, batch_size=args.batch_size, return_labels=True)
-
-    # 3. Load Model
+    # 2. Load Model
     model = ModelABaseline(cfg)
 
     if args.checkpoint:
@@ -50,8 +45,13 @@ if __name__ == "__main__":
         model.load_state_dict(state_dict, strict=False)
     else:
         print(f"Running evaluation on {device} using pretrained weights")
+
+    # 3. Load Data
+    # We need train_loader to train the classification head!
+    print("Loading Data...")
+    train_loader, _, test_loader = create_dataloaders(cfg, batch_size=args.batch_size, return_labels=True)
     
-    # 4. Run Evaluation (model is now step 3, data is step 2)
+    # 4. Run Evaluation
     # Pass train_loader to the evaluator class
     evaluator = Evaluator(model, train_loader, test_loader, device)
     

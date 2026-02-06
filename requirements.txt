@@ -1,7 +1,7 @@
 torch>=2.0.0
 torchvision
 open_clip_torch
-transformers
+transformers>=4.37.0,<5.0.0
 pyyaml
 tqdm
 numpy
