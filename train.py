@@ -128,10 +128,13 @@ def main():
 
         # Losses
         # Make sure these classes exist in your src/models/ directory
+        weight_i2t = cfg['model'].get('contrastive_weight_i2t', 0.5)
+        weight_t2i = cfg['model'].get('contrastive_weight_t2i', 0.5)
         criterions = {
-            'contrastive': ContrastiveLoss(),
+            'contrastive': ContrastiveLoss(weight_i2t=weight_i2t, weight_t2i=weight_t2i),
             'sparsity': SparsityLoss(target_ratio=cfg['model']['mask_ratio'])
         }
+        print(f"Contrastive loss weights: i2t={weight_i2t}, t2i={weight_t2i}")
 
         # Add local alignment loss if enabled
         if cfg['model'].get('use_local_alignment', False):

@@ -3,27 +3,37 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class ContrastiveLoss(nn.Module):
-    def __init__(self, temperature=0.07):
+    def __init__(self, temperature=0.07, weight_i2t=0.5, weight_t2i=0.5):
+        """
+        Symmetric contrastive loss with configurable weights.
+
+        Args:
+            temperature: Temperature for similarity scaling (unused if logit_scale provided)
+            weight_i2t: Weight for image-to-text loss (default 0.5)
+            weight_t2i: Weight for text-to-image loss (default 0.5)
+        """
         super().__init__()
         self.temperature = temperature
+        self.weight_i2t = weight_i2t
+        self.weight_t2i = weight_t2i
         self.cross_entropy = nn.CrossEntropyLoss()
 
     def forward(self, img_feat, text_feat, logit_scale):
         # Scale logic from CLIP (clamp to prevent overflow, exp(4.6) ≈ 100)
         logit_scale = torch.clamp(logit_scale, max=4.6).exp()
-        
+
         # Cosine similarity
         logits_per_image = logit_scale * img_feat @ text_feat.t()
         logits_per_text = logits_per_image.t()
-        
+
         # Targets are diagonal (0, 1, 2...)
         batch_size = img_feat.shape[0]
         labels = torch.arange(batch_size, device=img_feat.device)
-        
-        loss_i = self.cross_entropy(logits_per_image, labels)
-        loss_t = self.cross_entropy(logits_per_text, labels)
-        
-        return (loss_i + loss_t) / 2
+
+        loss_i2t = self.cross_entropy(logits_per_image, labels)
+        loss_t2i = self.cross_entropy(logits_per_text, labels)
+
+        return self.weight_i2t * loss_i2t + self.weight_t2i * loss_t2i
 
 class SparsityLoss(nn.Module):
     """

@@ -15,6 +15,10 @@ model:
   use_masking: false
   use_sparsity_loss: false
 
+  # Contrastive loss weights (i2t + t2i)
+  contrastive_weight_i2t: 0.5  # Image-to-text weight
+  contrastive_weight_t2i: 0.5  # Text-to-image weight
+
   use_local_alignment: false
   local_alignment_weight: 0.1
   local_alignment_temperature: 0.7
