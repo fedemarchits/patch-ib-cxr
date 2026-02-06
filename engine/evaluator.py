@@ -96,7 +96,9 @@ class Evaluator:
         # 1. Extract Embeddings
         with torch.no_grad():
             for batch in tqdm(self.test_loader, desc="Extracting"):
-                
+                if batch is None:
+                    continue
+
                 images, text = batch[0].to(self.device), batch[1].to(self.device)
                 
                 # Model returns: img_emb, txt_emb, logits, local_features
