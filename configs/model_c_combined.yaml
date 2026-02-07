@@ -1,7 +1,7 @@
 experiment_name: "model_c_combined_metric"
 
 data:
-  json_path: "/workspace/mimic_moro232_stratified.jsonl"
+  json_path: "/workspace/mimic_master_official_split.jsonl"
   image_root: "/datasets/MIMIC-CXR/files"
   batch_size: 64
   num_workers: 4
