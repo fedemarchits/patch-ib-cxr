@@ -179,6 +179,46 @@ Our model extends the standard CLIP framework with specialized heads and alignme
 
 ---
 
+## ⚙️ Common Training and Evaluation Settings
+
+Unless otherwise specified for a particular model, the following configurations and practices apply across all experiments:
+
+### Foundation Model
+
+All models are built upon **BiomedCLIP** (`hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224`) as the foundation model, utilizing its ViT-B/16 for the vision backbone and PubMedBERT for the text backbone.
+
+### Data Configuration
+
+- **Dataset**: MIMIC-CXR (`mimic_master_official_split.jsonl`)
+- **Image Root**: `/datasets/MIMIC-CXR/files`
+- **Image Size**: 224x224 pixels
+- **Data Loaders**: 4 workers per DataLoader, ensuring efficient data loading.
+
+### Training Strategy
+
+- **Optimizer**: AdamW.
+- **Learning Rate Schedule**: Cosine decay with linear warmup (typically `1000` warmup steps).
+- **Staged Training**: All models employ a two-phase staged training approach unless `staged_training` is explicitly set to `false`.
+  - **Phase 1 (Warmup)**: Backbone frozen, only projection heads and `logit_scale` trained at a higher learning rate (e.g., `1.0e-4`) for a few epochs (e.g., `3` epochs).
+  - **Phase 2 (Fine-tuning)**: Backbone unfrozen, all parameters fine-tuned with Layer-wise Learning Rate Decay (LLRD) with a `llrd_factor` of `0.85` and a lower base learning rate (e.g., `5.0e-6`).
+- **Mixed Precision**: Automatic Mixed Precision (AMP) is enabled (`use_amp: true`) for performance efficiency.
+- **Gradient Accumulation**: Gradients are accumulated over `2` steps (`gradient_accumulation_steps: 2`), resulting in an effective batch size of `128` when the per-GPU `batch_size` is `64`.
+
+### Early Stopping
+
+- **Metric**: Combined metric, calculated as a weighted average of Mean Recall@K and Mean AUC (`0.7 * Recall + 0.3 * AUC` in most cases, or `0.6 * Recall + 0.4 * AUC` for Model A).
+- **Patience**: `7` epochs (for Model A, it was `10`).
+- **AUC Evaluation**: Mean AUC is computed every epoch (`eval_auc_every: 1`) on the validation set for accurate early stopping.
+
+### Evaluation
+
+- **Metrics**: Standard evaluation includes:
+  - **Retrieval**: Recall@K (R@1, R@5, R@10) for both Image-to-Text (I2T) and Text-to-Image (T2I).
+  - **Classification**: Mean Area Under the Receiver Operating Characteristic Curve (AUC) and Mean Average Precision (AP) from a linear probe.
+- **Hardware**: Evaluations are typically performed on an RTX 3090 GPU.
+
+---
+
 ## 🧠 Models
 
 This section will detail the architecture and training strategies for:
@@ -210,7 +250,7 @@ This section will detail the architecture and training strategies for:
 
 ### Evaluation Results (Test Set)
 
-#### Performance Metrics
+#### Performance Metrics
 
 | Metric   | I2T (%) | T2I (%) | Value |
 | :------- | :------ | :------ | :---- |
@@ -226,5 +266,29 @@ This section will detail the architecture and training strategies for:
 | :--------- | :------ | :------ |
 | Throughput | 71.84   | img/sec |
 | Peak VRAM  | 3576.84 | MB      |
+
+- **Training Progress Visualizations**:
+<div style="display: flex; justify-content: space-around; flex-wrap: wrap;">
+    <div style="flex: 1 1 48%; margin: 1%;">
+        <img src="imgs/model-a-staged-training_train_val_loss.png" alt="Model A Training & Validation Loss" style="width: 100%;"/>
+        _Figure: Model A Training and Validation Loss over Epochs_
+    </div>
+    <div style="flex: 1 1 48%; margin: 1%;">
+        <img src="imgs/model-a-staged-training_combined_metric.png" alt="Model A Combined Metric" style="width: 100%;"/>
+        _Figure: Model A Combined Metric (Recall + AUC) over Epochs_
+    </div>
+    <div style="flex: 1 1 48%; margin: 1%;">
+        <img src="imgs/model-a-staged-training_mean_recall.png" alt="Model A Mean Retrieval Recall" style="width: 100%;"/>
+        _Figure: Model A Mean Retrieval Recall over Epochs_
+    </div>
+    <div style="flex: 1 1 48%; margin: 1%;">
+        <img src="imgs/model-a-staged-training_mean_auc.png" alt="Model A Mean Classification AUC" style="width: 100%;"/>
+        _Figure: Model A Mean Classification AUC over Epochs_
+    </div>
+    <div style="flex: 1 1 48%; margin: 1%;">
+        <img src="imgs/model-a-staged-training_learning_rate.png" alt="Model A Learning Rate Schedule" style="width: 100%;"/>
+        _Figure: Model A Learning Rate Schedule over Training Steps_
+    </div>
+</div>
 
 - ...
