@@ -1,9 +1,10 @@
 #!/bin/bash
 # eval.sh - Run evaluation with visualizations inside Docker
-# Usage: ./eval.sh <config_name> <checkpoint_path> [--num_vis_samples N]
+# Usage: ./eval.sh <config_name> <checkpoint_path> [options]
 # Examples:
-#   ./eval.sh model_c_combined.yaml logs/model_c/best_model.pt
-#   ./eval.sh model_b_combined.yaml logs/model_b/best_model.pt --num_vis_samples 20
+#   ./eval.sh model_a_combined.yaml logs/model_a/best_model.pt
+#   ./eval.sh model_b_combined.yaml logs/model_b/best_model.pt --wandb
+#   ./eval.sh model_c_combined.yaml logs/model_c/best_model.pt --wandb --num_vis_samples 20
 
 set -e  # Exit on error
 
@@ -27,6 +28,9 @@ python3 evaluate.py \
     --num_vis_samples 10 \
     "$@"
 
+echo ""
 echo "Done! Results saved to:"
-echo "  - $OUTPUT_DIR/eval_results.txt"
+echo "  - $OUTPUT_DIR/eval_results.json"
+echo "  - $OUTPUT_DIR/efficiency_report.txt"
+echo "  - $OUTPUT_DIR/results_report.txt"
 echo "  - $OUTPUT_DIR/visualizations/"

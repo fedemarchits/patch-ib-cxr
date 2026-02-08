@@ -1,10 +1,15 @@
 import torch
+import time
 from tqdm import tqdm
 
 def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scaler, use_amp, wandb_run=None, log_every_n_steps=20, scheduler=None, global_step=0, accumulation_steps=1):
     model.train()
     total_loss = 0
     num_batches = 0
+
+    # Timing tracking
+    step_times = []
+    is_cuda = device == "cuda" or str(device).startswith("cuda")
     sparsity_criterion = criterion['sparsity']
     contrastive_criterion = criterion['contrastive']
     local_criterion = criterion.get('local_alignment', None)
@@ -21,6 +26,11 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
     for batch_idx, batch in enumerate(loop):
         if batch is None:
             continue
+
+        # Start timing
+        if is_cuda:
+            torch.cuda.synchronize()
+        step_start = time.perf_counter()
 
         num_batches += 1
         images, text = batch[0].to(device), batch[1].to(device)
@@ -126,11 +136,17 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
             if scheduler is not None and scaler.get_scale() >= old_scale:
                 scheduler.step()
 
+        # End timing
+        if is_cuda:
+            torch.cuda.synchronize()
+        step_time_ms = (time.perf_counter() - step_start) * 1000
+        step_times.append(step_time_ms)
+
         # Track unscaled loss for logging
         total_loss += loss.item() * accumulation_steps
 
         # Progress bar with sparsity info if masking enabled
-        postfix_dict = {"loss": loss.item() * accumulation_steps}
+        postfix_dict = {"loss": loss.item() * accumulation_steps, "ms/step": f"{step_time_ms:.0f}"}
         if logits is not None:
             with torch.no_grad():
                 kept_ratio = (logits > 0).float().mean().item()
@@ -140,10 +156,17 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
         global_step += 1
 
         if wandb_run and num_batches % log_every_n_steps == 0:
+            # Compute average step time over recent steps
+            recent_step_times = step_times[-log_every_n_steps:] if len(step_times) >= log_every_n_steps else step_times
+            avg_step_time_ms = sum(recent_step_times) / len(recent_step_times) if recent_step_times else 0
+
             log_dict = {
                 "train/step_loss": loss.item() * accumulation_steps,
                 "train/contrastive_loss_raw": loss_con_raw.item(),
-                "train/learning_rate": optimizer.param_groups[0]['lr']
+                "train/learning_rate": optimizer.param_groups[0]['lr'],
+                "efficiency/step_time_ms": step_time_ms,
+                "efficiency/avg_step_time_ms": avg_step_time_ms,
+                "efficiency/throughput_img_per_sec": images.size(0) / (step_time_ms / 1000) if step_time_ms > 0 else 0
             }
             if loss_sparse is not None:
                 log_dict["train/sparsity_loss"] = loss_sparse.item()

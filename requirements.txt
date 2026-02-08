@@ -11,3 +11,4 @@ wandb
 datasets
 pyarrow
 matplotlib
+fvcore 

@@ -2,10 +2,43 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import time
+import json
+import os
 from tqdm import tqdm
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score, average_precision_score
 import numpy as np
+
+
+def estimate_model_flops(model, image_size=224, text_length=77):
+    """
+    Estimate FLOPs for the model using a simple forward pass counter.
+    Returns GFLOPs (billions of floating point operations).
+    """
+    try:
+        from fvcore.nn import FlopCountAnalysis
+
+        # Create dummy inputs
+        device = next(model.parameters()).device
+        dummy_image = torch.randn(1, 3, image_size, image_size, device=device)
+        dummy_text = torch.randint(0, 1000, (1, text_length), device=device)
+
+        # Count FLOPs
+        flops = FlopCountAnalysis(model, (dummy_image, dummy_text))
+        total_flops = flops.total()
+        gflops = total_flops / 1e9
+
+        return gflops
+    except ImportError:
+        print("   >> [FLOPs] fvcore not installed. Using parameter-based estimate.")
+        # Fallback: estimate based on parameter count
+        # Rough estimate: 2 FLOPs per parameter per forward pass
+        total_params = sum(p.numel() for p in model.parameters())
+        gflops = (2 * total_params) / 1e9
+        return gflops
+    except Exception as e:
+        print(f"   >> [FLOPs] Error computing FLOPs: {e}")
+        return 0.0
 
 
 class Evaluator:
@@ -17,15 +50,20 @@ class Evaluator:
         self.model.to(device)
         self.train_loader = train_loader
 
-    def benchmark_efficiency(self, num_batches=50):
+    def benchmark_efficiency(self, num_batches=50, batch_size=None):
         """
-        Measure Throughput (img/sec) and Peak VRAM.
+        Measure Throughput (img/sec), Peak VRAM, Step Time, and FLOPs.
         Works on CUDA, MPS, and CPU devices.
         """
         print(f"\n[Efficiency] Benchmarking over {num_batches} batches on {self.device}...")
 
         is_cuda = self.device == "cuda" or str(self.device).startswith("cuda")
         is_mps = self.device == "mps" or str(self.device).startswith("mps")
+
+        # 0. Estimate FLOPs
+        print("   >> Estimating FLOPs...")
+        gflops = estimate_model_flops(self.model)
+        print(f"   >> Estimated GFLOPs: {gflops:.2f}")
 
         # 1. Warmup
         with torch.no_grad():
@@ -44,9 +82,10 @@ class Evaluator:
             torch.mps.synchronize()
 
         total_images = 0
+        step_times = []
 
         # 3. Timing Loop
-        start_time = time.time()
+        total_start = time.time()
         with torch.no_grad():
             # Only use autocast on CUDA
             autocast_enabled = is_cuda
@@ -55,9 +94,23 @@ class Evaluator:
                     if batch is None:
                         continue
                     if i >= num_batches: break
+
+                    # Per-step timing
+                    if is_cuda:
+                        torch.cuda.synchronize()
+                    step_start = time.perf_counter()
+
                     images, text = batch[0].to(self.device), batch[1].to(self.device)
                     _ = self.model(images, text)
+
+                    if is_cuda:
+                        torch.cuda.synchronize()
+                    step_time_ms = (time.perf_counter() - step_start) * 1000
+                    step_times.append(step_time_ms)
+
                     total_images += images.size(0)
+                    if batch_size is None:
+                        batch_size = images.size(0)
 
         # Sync before measuring time
         if is_cuda:
@@ -65,10 +118,12 @@ class Evaluator:
         elif is_mps:
             torch.mps.synchronize()
 
-        elapsed_sec = time.time() - start_time
+        elapsed_sec = time.time() - total_start
 
         # 4. Calculate Stats
         throughput = total_images / elapsed_sec  # img/sec
+        avg_step_time_ms = sum(step_times) / len(step_times) if step_times else 0
+        latency_per_image_ms = avg_step_time_ms / batch_size if batch_size else 0
 
         # Memory stats (only available on CUDA)
         if is_cuda:
@@ -76,13 +131,31 @@ class Evaluator:
         else:
             peak_mem = 0.0  # Not available on CPU/MPS
 
-        print(f"   >> Throughput: {throughput:.2f} img/sec")
-        if is_cuda:
-            print(f"   >> Peak VRAM:  {peak_mem:.2f} MB")
-        else:
-            print(f"   >> Peak VRAM:  N/A (only measured on CUDA)")
+        # Count parameters
+        total_params = sum(p.numel() for p in self.model.parameters())
+        trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
 
-        return {"throughput": throughput, "peak_vram_mb": peak_mem}
+        print(f"\n   === Efficiency Report ===")
+        print(f"   >> Throughput:         {throughput:.2f} img/sec")
+        print(f"   >> Avg Step Time:      {avg_step_time_ms:.2f} ms/batch")
+        print(f"   >> Latency per Image:  {latency_per_image_ms:.2f} ms/img")
+        print(f"   >> Peak VRAM:          {peak_mem:.2f} MB" if is_cuda else "   >> Peak VRAM:          N/A")
+        print(f"   >> GFLOPs:             {gflops:.2f}")
+        print(f"   >> Total Params:       {total_params:,}")
+        print(f"   >> Trainable Params:   {trainable_params:,}")
+        print(f"   ===========================\n")
+
+        return {
+            "throughput_img_per_sec": throughput,
+            "avg_step_time_ms": avg_step_time_ms,
+            "latency_per_image_ms": latency_per_image_ms,
+            "peak_vram_mb": peak_mem,
+            "gflops": gflops,
+            "total_params": total_params,
+            "trainable_params": trainable_params,
+            "batch_size": batch_size,
+            "num_batches_tested": len(step_times)
+        }
 
     def compute_retrieval(self):
         """

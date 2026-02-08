@@ -2,12 +2,125 @@ import torch
 import yaml
 import argparse
 import os
+import json
+from datetime import datetime
 
 # Absolute imports (run from project root)
 from models.full_model import ModelABaseline
 from data.dataset import create_dataloaders
 from engine.evaluator import Evaluator
 from engine.visualizer import visualize_attention_samples, visualize_token_attention
+
+# Try to import wandb (optional)
+try:
+    import wandb
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
+
+
+def save_results_json(results, filepath):
+    """Save results to a JSON file, handling numpy types."""
+    def convert_to_serializable(obj):
+        if hasattr(obj, 'item'):  # numpy/torch scalar
+            return obj.item()
+        elif hasattr(obj, 'tolist'):  # numpy array
+            return obj.tolist()
+        return obj
+
+    serializable = {k: convert_to_serializable(v) for k, v in results.items()}
+    with open(filepath, 'w') as f:
+        json.dump(serializable, f, indent=2)
+    return serializable
+
+
+def create_efficiency_report(eff_metrics, output_dir):
+    """Create a formatted efficiency report text file."""
+    report_lines = [
+        "=" * 60,
+        "EFFICIENCY REPORT",
+        "=" * 60,
+        f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "",
+        "--- Performance Metrics ---",
+        f"Throughput:           {eff_metrics.get('throughput_img_per_sec', 0):.2f} img/sec",
+        f"Avg Step Time:        {eff_metrics.get('avg_step_time_ms', 0):.2f} ms/batch",
+        f"Latency per Image:    {eff_metrics.get('latency_per_image_ms', 0):.2f} ms/img",
+        "",
+        "--- Memory Usage ---",
+        f"Peak VRAM:            {eff_metrics.get('peak_vram_mb', 0):.2f} MB",
+        "",
+        "--- Computational Complexity ---",
+        f"GFLOPs:               {eff_metrics.get('gflops', 0):.2f}",
+        f"Total Parameters:     {eff_metrics.get('total_params', 0):,}",
+        f"Trainable Parameters: {eff_metrics.get('trainable_params', 0):,}",
+        "",
+        "--- Test Configuration ---",
+        f"Batch Size:           {eff_metrics.get('batch_size', 'N/A')}",
+        f"Batches Tested:       {eff_metrics.get('num_batches_tested', 'N/A')}",
+        "=" * 60,
+    ]
+
+    report_path = os.path.join(output_dir, "efficiency_report.txt")
+    with open(report_path, 'w') as f:
+        f.write('\n'.join(report_lines))
+
+    print('\n'.join(report_lines))
+    return report_path
+
+
+def create_results_report(ret_metrics, cls_metrics, output_dir):
+    """Create a formatted results report text file."""
+    # Class names for MIMIC-CXR
+    class_names = [
+        "Atelectasis", "Cardiomegaly", "Consolidation", "Edema",
+        "Enlarged Cardiomediastinum", "Fracture", "Lung Lesion", "Lung Opacity",
+        "No Finding", "Pleural Effusion", "Pleural Other", "Pneumonia",
+        "Pneumothorax", "Support Devices"
+    ]
+
+    report_lines = [
+        "=" * 60,
+        "EVALUATION RESULTS REPORT",
+        "=" * 60,
+        f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "",
+        "--- Retrieval Metrics (Zero-Shot) ---",
+        "",
+        "Image-to-Text (I2T):",
+        f"  R@1:   {ret_metrics.get('i2t_R@1', 0):.2f}%",
+        f"  R@5:   {ret_metrics.get('i2t_R@5', 0):.2f}%",
+        f"  R@10:  {ret_metrics.get('i2t_R@10', 0):.2f}%",
+        "",
+        "Text-to-Image (T2I):",
+        f"  R@1:   {ret_metrics.get('t2i_R@1', 0):.2f}%",
+        f"  R@5:   {ret_metrics.get('t2i_R@5', 0):.2f}%",
+        f"  R@10:  {ret_metrics.get('t2i_R@10', 0):.2f}%",
+        "",
+        "--- Classification Metrics (Linear Probe) ---",
+        "",
+        f"Mean AUC:  {cls_metrics.get('classification_mean_auc', 0):.4f}",
+        f"Mean AP:   {cls_metrics.get('classification_mean_ap', 0):.4f}",
+        "",
+        "Per-Class AUC:",
+    ]
+
+    for i, name in enumerate(class_names):
+        auc = cls_metrics.get(f'class_{i}_auc', None)
+        if auc is not None:
+            report_lines.append(f"  {name:30s}: {auc:.4f}")
+        else:
+            report_lines.append(f"  {name:30s}: N/A (no samples)")
+
+    report_lines.extend(["", "=" * 60])
+
+    report_path = os.path.join(output_dir, "results_report.txt")
+    with open(report_path, 'w') as f:
+        f.write('\n'.join(report_lines))
+
+    print('\n'.join(report_lines))
+    return report_path
+
 
 # --- ENTRY POINT ---
 if __name__ == "__main__":
@@ -22,17 +135,35 @@ if __name__ == "__main__":
     parser.add_argument("--visualize", action="store_true", help="Generate attention visualizations")
     parser.add_argument("--num_vis_samples", type=int, default=10, help="Number of samples to visualize")
     parser.add_argument("--output_dir", type=str, default="logs", help="Output directory for results")
+    parser.add_argument("--wandb", action="store_true", help="Upload results to Weights & Biases")
+    parser.add_argument("--wandb_project", type=str, default="Thesis-PatchIB", help="W&B project name")
+    parser.add_argument("--wandb_run_name", type=str, default=None, help="W&B run name (auto-generated if not set)")
     args = parser.parse_args()
-    
+
     # 1. Setup
     cfg = get_config(args.config)
-    
+    os.makedirs(args.output_dir, exist_ok=True)
+
     # Device setup
     config_device = cfg.get('training', {}).get('device', 'cpu')
     if config_device == "cuda" and not torch.cuda.is_available():
         device = "cpu"
     else:
         device = config_device
+
+    # Initialize wandb if requested
+    wandb_run = None
+    if args.wandb and WANDB_AVAILABLE:
+        run_name = args.wandb_run_name or f"eval-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        wandb_run = wandb.init(
+            project=args.wandb_project,
+            name=run_name,
+            config=cfg,
+            job_type="evaluation"
+        )
+        print(f"[WandB] Initialized run: {run_name}")
+    elif args.wandb and not WANDB_AVAILABLE:
+        print("[WandB] wandb not installed. Skipping upload.")
 
     # 2. Load Model
     model = ModelABaseline(cfg)
@@ -50,18 +181,18 @@ if __name__ == "__main__":
     # We need train_loader to train the classification head!
     print("Loading Data...")
     train_loader, _, test_loader = create_dataloaders(cfg, batch_size=args.batch_size, return_labels=True)
-    
+
     # 4. Run Evaluation
     # Pass train_loader to the evaluator class
     evaluator = Evaluator(model, train_loader, test_loader, device)
-    
+
     # A. Efficiency
-    eff_metrics = evaluator.benchmark_efficiency()
-    
+    eff_metrics = evaluator.benchmark_efficiency(batch_size=args.batch_size)
+
     # B. Retrieval (Zero-Shot)
     ret_metrics = evaluator.compute_retrieval()
-    
-    # C. Classification (Linear Probe) <--- NEW TASK
+
+    # C. Classification (Linear Probe)
     cls_metrics = evaluator.evaluate_classification()
 
     # D. Attention Visualizations (optional)
@@ -90,12 +221,78 @@ if __name__ == "__main__":
                 use_amp=use_amp
             )
 
-    # 5. Save
-    final_results = {**eff_metrics, **ret_metrics, **cls_metrics}
+    # 5. Save Results
+    print("\n" + "=" * 60)
+    print("SAVING RESULTS")
+    print("=" * 60)
 
-    os.makedirs(args.output_dir, exist_ok=True)
-    with open(os.path.join(args.output_dir, "eval_results.txt"), "w") as f:
-        f.write(str(final_results))
+    # Combine all metrics
+    all_results = {
+        **eff_metrics,
+        **ret_metrics,
+        **cls_metrics,
+        "checkpoint": args.checkpoint,
+        "config": args.config,
+        "device": device,
+        "timestamp": datetime.now().isoformat()
+    }
 
-    print(f"\n[Done] Results saved to {args.output_dir}/eval_results.txt")
-    print(final_results)
+    # Save as JSON (machine-readable)
+    json_path = os.path.join(args.output_dir, "eval_results.json")
+    save_results_json(all_results, json_path)
+    print(f"   >> JSON results:     {json_path}")
+
+    # Save efficiency report (human-readable)
+    eff_report_path = create_efficiency_report(eff_metrics, args.output_dir)
+    print(f"   >> Efficiency report: {eff_report_path}")
+
+    # Save results report (human-readable)
+    results_report_path = create_results_report(ret_metrics, cls_metrics, args.output_dir)
+    print(f"   >> Results report:    {results_report_path}")
+
+    # 6. Upload to WandB
+    if wandb_run:
+        print("\n[WandB] Uploading results...")
+
+        # Log metrics
+        wandb.log({
+            # Efficiency
+            "eval/throughput_img_per_sec": eff_metrics.get('throughput_img_per_sec', 0),
+            "eval/avg_step_time_ms": eff_metrics.get('avg_step_time_ms', 0),
+            "eval/latency_per_image_ms": eff_metrics.get('latency_per_image_ms', 0),
+            "eval/peak_vram_mb": eff_metrics.get('peak_vram_mb', 0),
+            "eval/gflops": eff_metrics.get('gflops', 0),
+            # Retrieval
+            "eval/i2t_R@1": ret_metrics.get('i2t_R@1', 0),
+            "eval/i2t_R@5": ret_metrics.get('i2t_R@5', 0),
+            "eval/i2t_R@10": ret_metrics.get('i2t_R@10', 0),
+            "eval/t2i_R@1": ret_metrics.get('t2i_R@1', 0),
+            "eval/t2i_R@5": ret_metrics.get('t2i_R@5', 0),
+            "eval/t2i_R@10": ret_metrics.get('t2i_R@10', 0),
+            # Classification
+            "eval/mean_auc": cls_metrics.get('classification_mean_auc', 0),
+            "eval/mean_ap": cls_metrics.get('classification_mean_ap', 0),
+        })
+
+        # Upload files as artifacts
+        artifact = wandb.Artifact(
+            name=f"eval-results-{wandb_run.id}",
+            type="evaluation",
+            description="Evaluation results including efficiency, retrieval, and classification metrics"
+        )
+        artifact.add_file(json_path)
+        artifact.add_file(eff_report_path)
+        artifact.add_file(results_report_path)
+
+        # Add visualizations if they exist
+        vis_dir = os.path.join(args.output_dir, "visualizations")
+        if os.path.exists(vis_dir):
+            artifact.add_dir(vis_dir, name="visualizations")
+
+        wandb_run.log_artifact(artifact)
+        print(f"   >> Uploaded artifact: eval-results-{wandb_run.id}")
+
+        wandb.finish()
+        print("[WandB] Run finished.")
+
+    print(f"\n[Done] All results saved to {args.output_dir}/")
