@@ -11,6 +11,7 @@ This repository implements a Patch-based Information Bottleneck (IB) approach fo
 - [📈 Dataset Distribution & Statistics](#-dataset-distribution--statistics)
 - [⚙️ Data Generation Pipeline](#-data-generation-pipeline)
 - [🏆 Benchmarking & SOTA Comparison](#-benchmarking--sota-comparison)
+- [🧬 Foundation Model](#-foundation-model)
 - [🧠 Models](#-models)
 
 ---
@@ -134,6 +135,47 @@ We evaluate the model's zero-shot classification performance across the 14 stand
 
 - **Methodology**: We use prompt-based classification (e.g., "A chest x-ray showing [PATHOLOGY]") to calculate the Area Under the Receiver Operating Characteristic Curve (AUC-ROC).
 - **Target**: Our goal is to exceed the AUC of the foundational GLoRIA model (0.815) by leveraging the semantic depth of the full-text master dataset.
+
+---
+
+# 🧠 Model Architecture & Progression
+
+The project follows a staged development from a standard global baseline to a highly efficient, interpretability-focused Patch-IB model. The architecture is built on top of **BiomedCLIP** (ViT-B/16 + PubMedBERT).
+
+---
+
+## 🏗️ Core Architecture Components
+
+Our model extends the standard CLIP framework with specialized heads and alignment modules:
+
+### 1. Global Projection Heads
+
+- **Image Projector**: Maps pooled ViT patch features into a shared latent space ($d=512$).
+- **Text Projector**: Maps the BERT `[CLS]` token embedding into the same shared space.
+- **Loss**: **InfoNCE Full** ($\mathcal{L}_{NCE-full}$) ensures the model distinguishes matching image-report pairs from distractors in the batch
+
+### 2. Spatial Mask Head (Patch-IB)
+
+- **Logic**: A lightweight head $z = \sigma(w_{z}^{\top}v_{ij}+b_{z})$ that assigns a salience score $\in (0,1)$ to each of the 196 patches
+- **Goal**: Identifying the **Information Bottleneck (IB)**—the minimum subset of patches required to retain the model's discriminative power
+- **Optimization**: Controlled by a sparsity constraint ($\mathcal{L}_{sparse}$) and a consistency loss ($\mathcal{L}_{cons}$) to ensure the masked image behaves similarly to the full image
+
+### 3. Local Alignment Head (Grounding)
+
+- **Cross-Attention**: Uses text tokens as **queries** and image patches as **keys/values**.
+- **Loss**: **Local Loss** ($\mathcal{L}_{local}$) minimizes the distance between text-aligned patch summaries and their corresponding word embeddings, forcing clinical grounding.
+
+---
+
+## 📈 Experimental Progression (Ablation Study)
+
+| Model       | Variant        | Global CLIP | Local Align | Patch-IB | Top-K/Dropping |
+| :---------- | :------------- | :---------: | :---------: | :------: | :------------: |
+| **Model A** | **Baseline**   |     ✅      |     ❌      |    ❌    |       ❌       |
+| **Model B** | **+ Local**    |     ✅      |     ✅      |    ❌    |       ❌       |
+| **Model C** | **+ Patch-IB** |     ✅      |     ✅      |    ✅    |       ❌       |
+| **Model D** | **Top-K Opt.** |     ✅      |     ✅      |    ✅    |   ✅ (Soft)    |
+| **Model E** | **Token Drop** |     ✅      |     ✅      |    ✅    |   ✅ (Hard)    |
 
 ---
 
