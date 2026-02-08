@@ -181,51 +181,50 @@ Our model extends the standard CLIP framework with specialized heads and alignme
 
 ## 🧠 Models
 
-_(Section in progress)_
-
 This section will detail the architecture and training strategies for:
 
 - **Model A: Global CLIP Baseline (Contrastive Only)**
-    - **Architecture**: Model A serves as the foundational baseline. It utilizes a **BiomedCLIP** (ViT-B/16 for vision and PubMedBERT for text) as its backbone. It exclusively relies on global image and text embeddings, which are mapped into a shared latent space ($d=512$) via projection heads. Masking and local alignment features are disabled.
+  - **Architecture**: Model A serves as the foundational baseline. It utilizes a **BiomedCLIP** (ViT-B/16 for vision and PubMedBERT for text) as its backbone. It exclusively relies on global image and text embeddings, which are mapped into a shared latent space ($d=512$) via projection heads. Masking and local alignment features are disabled.
 
-    - **Configuration**:
+  - **Configuration**:
 
-| Parameter | Value | Description |
-| :---------------------- | :--------------------- | :--------------------------------------------------------- |
-| `use_masking` | `false` | Patch-IB masking disabled |
-| `use_local_alignment` | `false` | Local token-patch alignment disabled |
-| `temperature` | `0.1` | Initial temperature for InfoNCE loss |
-| `contrastive_weight_i2t` | `0.5` | Weight for image-to-text loss |
-| `contrastive_weight_t2i` | `0.5` | Weight for text-to-image loss |
-| `epochs` | `40` | Maximum training epochs |
-| `lr` (fine-tuning) | `5.0e-6` | Base learning rate for fine-tuning phase |
-| `warmup_epochs` | `3` | Epochs with frozen backbone (Phase 1) |
-| `warmup_lr` (Phase 1) | `1.0e-4` | Learning rate for Phase 1 |
-| `weight_decay` | `0.05` | AdamW weight decay |
-| `warmup_steps` | `1000` | LR warmup steps (linear) |
-| `early_stopping_metric` | `combined` | Metric to monitor: `0.6 * Recall + 0.4 * AUC` |
-| `early_stopping_patience` | `10` | Epochs without improvement before stopping |
-| `batch_size` | `64` | Batch size per GPU |
-| `gradient_accumulation_steps` | `2` | Accumulate gradients over N steps (effective batch: 128) |
-| `use_amp` | `true` | Enable mixed precision (FP16) |
-| `llrd_factor` | `0.85` | Layer-wise LR decay factor |
+| Parameter                     | Value      | Description                                              |
+| :---------------------------- | :--------- | :------------------------------------------------------- |
+| `use_masking`                 | `false`    | Patch-IB masking disabled                                |
+| `use_local_alignment`         | `false`    | Local token-patch alignment disabled                     |
+| `temperature`                 | `0.1`      | Initial temperature for InfoNCE loss                     |
+| `contrastive_weight_i2t`      | `0.5`      | Weight for image-to-text loss                            |
+| `contrastive_weight_t2i`      | `0.5`      | Weight for text-to-image loss                            |
+| `epochs`                      | `40`       | Maximum training epochs                                  |
+| `lr` (fine-tuning)            | `5.0e-6`   | Base learning rate for fine-tuning phase                 |
+| `warmup_epochs`               | `3`        | Epochs with frozen backbone (Phase 1)                    |
+| `warmup_lr` (Phase 1)         | `1.0e-4`   | Learning rate for Phase 1                                |
+| `weight_decay`                | `0.05`     | AdamW weight decay                                       |
+| `warmup_steps`                | `1000`     | LR warmup steps (linear)                                 |
+| `early_stopping_metric`       | `combined` | Metric to monitor: `0.6 * Recall + 0.4 * AUC`            |
+| `early_stopping_patience`     | `10`       | Epochs without improvement before stopping               |
+| `batch_size`                  | `64`       | Batch size per GPU                                       |
+| `gradient_accumulation_steps` | `2`        | Accumulate gradients over N steps (effective batch: 128) |
+| `use_amp`                     | `true`     | Enable mixed precision (FP16)                            |
+| `llrd_factor`                 | `0.85`     | Layer-wise LR decay factor                               |
 
-    - **Evaluation Results (Test Set)**:
+### Evaluation Results (Test Set)
 
-        - **Performance Metrics**:
+#### Performance Metrics
 
-| Metric | I2T (%) | T2I (%) | Value |
-| :------------------ | :------ | :------ | :---- |
-| `R@1`               | 20.69   | 19.38   |       |
-| `R@5`               | 48.37   | 48.95   |       |
-| `R@10`              | 62.76   | 60.87   |       |
-| Mean AUC            |         |         | 0.765 |
-| Mean AP             |         |         | 0.343 |
+| Metric   | I2T (%) | T2I (%) | Value |
+| :------- | :------ | :------ | :---- |
+| `R@1`    | 20.69   | 19.38   |       |
+| `R@5`    | 48.37   | 48.95   |       |
+| `R@10`   | 62.76   | 60.87   |       |
+| Mean AUC |         |         | 0.765 |
+| Mean AP  |         |         | 0.343 |
 
-        - **Efficiency Metrics**:
+##### Efficiency Metrics
 
-| Metric | Value | Unit |
-| :------------------ | :--------- | :-------- |
-| Throughput          | 71.84      | img/sec   |
-| Peak VRAM           | 3576.84    | MB        |
+| Metric     | Value   | Unit    |
+| :--------- | :------ | :------ |
+| Throughput | 71.84   | img/sec |
+| Peak VRAM  | 3576.84 | MB      |
+
 - ...
