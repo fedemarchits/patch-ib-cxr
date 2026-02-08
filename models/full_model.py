@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from .backbone import BiomedCLIPBackbone
-from .heads import PatchMaskingHead
+from .heads import PatchMaskingHead, MaskHeadTopK
 
 
 class LocalAlignModule(nn.Module):
@@ -68,10 +68,17 @@ class ModelABaseline(nn.Module):
 
         self.use_masking = cfg['model'].get('use_masking', False)
         self.use_local_alignment = cfg['model'].get('use_local_alignment', False)
+        self.use_topk_masking = cfg['model'].get('use_topk_masking', False)
+        self.k_ratio = cfg['model'].get('k_ratio', 0.25)
 
         # The Information Bottleneck Masker
         if self.use_masking:
-            self.mask_head = PatchMaskingHead(self.embed_dim)
+            if self.use_topk_masking:
+                # Model D: Top-K patch selection
+                self.mask_head = MaskHeadTopK(self.embed_dim, k_ratio=self.k_ratio)
+            else:
+                # Model C: Threshold-based masking
+                self.mask_head = PatchMaskingHead(self.embed_dim)
 
         # Projection layers for local alignment (768 -> 512)
         if self.use_local_alignment:
@@ -123,6 +130,7 @@ class ModelABaseline(nn.Module):
         importance_logits = None
         local_features = None  # Will hold (patch_feat, token_feat, attn_mask) if enabled
         img_emb_full = None    # Full embedding (for Patch-IB consistency loss)
+        topk_indices = None    # For Model D: indices of selected patches
 
         # Extract CLS and patches
         cls_token = features[:, 0, :]      # (B, 768)
@@ -136,7 +144,12 @@ class ModelABaseline(nn.Module):
 
             # Path 2: Masked embedding - for L_NCE_mask
             # 2a. Generate Mask (The "Bottleneck")
-            mask, importance_logits = self.mask_head(patch_tokens)
+            if self.use_topk_masking:
+                # Model D: Top-K selection returns (mask, logits, topk_indices)
+                mask, importance_logits, topk_indices = self.mask_head(patch_tokens)
+            else:
+                # Model C: Threshold-based returns (mask, logits)
+                mask, importance_logits = self.mask_head(patch_tokens)
 
             # 2b. Apply Mask
             masked_patches = patch_tokens * mask.unsqueeze(-1)
@@ -163,16 +176,24 @@ class ModelABaseline(nn.Module):
             # Get token-level embeddings
             token_embeddings, attention_mask = self.backbone.encode_text_tokens(text)
 
-            # Project patches and tokens to shared space (768 -> 512)
-            patch_features = self.patch_proj(patch_tokens)       # (B, 196, 512)
-            token_features = self.token_proj(token_embeddings)   # (B, L, 512)
+            # For Model D with Top-K: use only selected patches for efficiency
+            if self.use_topk_masking and topk_indices is not None:
+                # Get only the Top-K selected patches (B, K, 768)
+                selected_patches = self.mask_head.get_selected_patches(patch_tokens, topk_indices)
+                # Project selected patches to shared space (768 -> 512)
+                patch_features = self.patch_proj(selected_patches)  # (B, K, 512)
+            else:
+                # Model C or no masking: use all patches
+                patch_features = self.patch_proj(patch_tokens)  # (B, 196, 512)
+
+            token_features = self.token_proj(token_embeddings)  # (B, L, 512)
 
             # Normalize for stable attention computation
             patch_features = F.normalize(patch_features, dim=-1)
             token_features = F.normalize(token_features, dim=-1)
 
             # Multi-head cross-attention: align patches to tokens
-            # Query=tokens, Key/Value=patches
+            # Query=tokens, Key/Value=patches (Top-K patches for Model D)
             aligned_features, attn_weights = self.local_align(
                 token_features, patch_features
             )

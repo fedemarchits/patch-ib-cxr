@@ -111,6 +111,31 @@ model:
 L = L_NCE_full + L_NCE_mask + λ_sparse × L_sparse + μ × L_consistency
 ```
 
+### Model D: Top-K Patch Selection
+
+```yaml
+model:
+  use_masking: true
+  use_topk_masking: true
+  k_ratio: 0.25
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `use_topk_masking` | bool | false | Use Top-K selection instead of threshold |
+| `k_ratio` | float | 0.25 | Fraction of patches to keep (0.25 = 49 of 196 patches) |
+
+**Top-K Benefits**:
+- Guaranteed sparsity: exactly K patches are always selected
+- More efficient local alignment: only K patches used as K/V
+- Reduced GPU memory compared to Model C
+- Better interpretability: can visualize which patches are selected
+
+**k_ratio Examples**:
+- `k_ratio: 0.5` = 98 patches (similar compression to Model C)
+- `k_ratio: 0.25` = 49 patches (4x compression)
+- `k_ratio: 0.125` = 24 patches (8x compression)
+
 ### Local Alignment
 
 ```yaml
@@ -311,6 +336,27 @@ model:
 ```
 
 **Loss**: `L = L_NCE_full + L_NCE_mask + λ_sparse × L_sparse + μ × L_cons + λ_local × L_local`
+
+### Model D: Top-K Patch Selection (Efficient)
+
+```yaml
+model:
+  use_masking: true
+  use_topk_masking: true
+  k_ratio: 0.25
+  sparsity_weight: 5.0
+  consistency_weight: 1.0
+  use_local_alignment: true
+  local_alignment_weight: 100
+```
+
+**Loss**: Same as Model C, but with guaranteed sparsity from Top-K selection
+
+**Key Differences from Model C**:
+1. **Guaranteed sparsity**: Always selects exactly K patches (vs. learned threshold)
+2. **Efficient local alignment**: Only Top-K patches used as K/V (vs. all 196)
+3. **Lower sparsity_weight**: Sparsity is guaranteed, so loss just helps learn rankings
+4. **Memory savings**: ~4x fewer patches in attention computation (with k_ratio=0.25)
 
 ---
 
