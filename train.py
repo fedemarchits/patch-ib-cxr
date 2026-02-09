@@ -132,7 +132,9 @@ def main():
         weight_t2i = cfg['model'].get('contrastive_weight_t2i', 0.5)
         criterions = {
             'contrastive': ContrastiveLoss(weight_i2t=weight_i2t, weight_t2i=weight_t2i),
-            'sparsity': SparsityLoss(target_ratio=cfg['model']['mask_ratio'])
+            'sparsity': SparsityLoss(target_ratio=cfg['model']['mask_ratio']),
+            'contrastive_mask_weight': cfg['model'].get('contrastive_mask_weight', 1.0),
+            'contrastive_full_weight': cfg['model'].get('contrastive_full_weight', 1.0),
         }
         print(f"Contrastive loss weights: i2t={weight_i2t}, t2i={weight_t2i}")
 

@@ -185,7 +185,7 @@ Unless otherwise specified for a particular model, the following configurations 
 
 ### Foundation Model
 
-All models are built upon **BiomedCLIP** (`hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224`) as the foundation model, utilizing its ViT-B/16 for the vision backbone and PubMedBERT for the text backbone.
+All models are built upon **BiomedCLIP** [`hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224`](https://huggingface.co/microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224) as the foundation model, utilizing its ViT-B/16 for the vision backbone and PubMedBERT for the text backbone.
 
 ### Data Configuration
 
@@ -226,6 +226,11 @@ This section will detail the architecture and training strategies for:
 - **Model A: Global CLIP Baseline (Contrastive Only)**
   - **Architecture**: Model A serves as the foundational baseline. It utilizes a **BiomedCLIP** (ViT-B/16 for vision and PubMedBERT for text) as its backbone. It exclusively relies on global image and text embeddings, which are mapped into a shared latent space ($d=512$) via projection heads. Masking and local alignment features are disabled.
 
+  The total loss for Model A is the InfoNCE Full loss, defined as:
+
+  $$ L*{total} = L*{NCE-full} = -\frac{1}{N} \sum*{i=1}^{N} \left[ \log \frac{\exp(\mathbf{v}\_i \cdot \mathbf{t}\_i / \tau)}{\sum*{j=1}^{N} \exp(\mathbf{v}_i \cdot \mathbf{t}\_j / \tau)} + \log \frac{\exp(\mathbf{t}\_i \cdot \mathbf{v}\_i / \tau)}{\sum_{j=1}^{N} \exp(\mathbf{t}\_i \cdot \mathbf{v}\_j / \tau)} \right] $$
+
+  Where $N$ is the batch size, $\mathbf{v}_i$ and $\mathbf{t}_i$ are the image and text embeddings for the $i$-th sample, and $\tau$ is the temperature parameter.
   - **Configuration**:
 
 | Parameter                     | Value      | Description                                              |

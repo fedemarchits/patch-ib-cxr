@@ -21,6 +21,8 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
     consistency_weight = criterion.get('consistency_weight', 1.0)
     sparsity_weight = criterion.get('sparsity_weight', 10.0)
     sparsity_warmup_steps = criterion.get('sparsity_warmup_steps', 0)
+    contrastive_mask_weight = criterion.get('contrastive_mask_weight', 1.0)
+    contrastive_full_weight = criterion.get('contrastive_full_weight', 1.0)
 
     loop = tqdm(dataloader, desc=f"Epoch {epoch}")
 
@@ -58,7 +60,7 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
             else:
                 loss_con = loss_con_raw
 
-            loss = loss_con
+            loss = loss_con * contrastive_mask_weight
 
             # ============ PATCH-IB LOSSES ============
             # InfoNCE on full embeddings (if Patch-IB enabled)
@@ -70,7 +72,7 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
                     loss_con_full = loss_con_full_raw * torch.exp(-log_var_con) + log_var_con
                 else:
                     loss_con_full = loss_con_full_raw
-                loss = loss + loss_con_full
+                loss = loss + loss_con_full * contrastive_full_weight
 
             # Sparsity loss (if masking enabled)
             loss_sparse = None

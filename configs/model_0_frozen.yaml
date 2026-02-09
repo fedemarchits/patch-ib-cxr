@@ -12,6 +12,8 @@ model:
   text_backbone: "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
   mask_ratio: 0.5
   temperature: 0.1
+  contrastive_mask_weight: 1.0   # Weight for contrastive loss
+  contrastive_full_weight: 1.0
   use_masking: false
   use_sparsity_loss: false
   use_local_alignment: false

@@ -12,6 +12,10 @@ model:
   text_backbone: "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
   temperature: 0.1
 
+  # Contrastive loss weights
+  contrastive_mask_weight: 1.0   # Weight for L_NCE-mask (on masked embedding)
+  contrastive_full_weight: 1.0   # Weight for L_NCE-full (on full embedding)
+
   # ============ PATCH-IB CONFIGURATION ============
   # Enable masking (Information Bottleneck)
   use_masking: true
