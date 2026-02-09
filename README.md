@@ -44,7 +44,7 @@ Experiments are conducted in a containerized environment to ensure consistency.
 
 # 📊 Dataset Analysis & Generation Logic
 
-The final dataset, `mimic_master_official_split.jsonl`, represents the transition from limited "Bag-of-Words" labels to a full-scale Vision-Language corpus. By extracting raw radiology narratives and aligning them with the official benchmark, we have eliminated the data duplication issues found in previous versions.
+The final dataset, `mimic_master_official_split.jsonl` considers only frontal AP and PA images for a total of 213364 samples.
 
 ---
 
@@ -198,7 +198,7 @@ All models are built upon **BiomedCLIP** [`hf-hub:microsoft/BiomedCLIP-PubMedBER
 
 - **Optimizer**: AdamW.
 - **Learning Rate Schedule**: Cosine decay with linear warmup (typically `1000` warmup steps).
-- **Staged Training**: All models employ a two-phase staged training approach unless `staged_training` is explicitly set to `false`.
+- **Staged Training**: Some models employ a two/three-phase staged training approach unless `staged_training`, this stabilized the training for most simple models;
   - **Phase 1 (Warmup)**: Backbone frozen, only projection heads and `logit_scale` trained at a higher learning rate (e.g., `1.0e-4`) for a few epochs (e.g., `3` epochs).
   - **Phase 2 (Fine-tuning)**: Backbone unfrozen, all parameters fine-tuned with Layer-wise Learning Rate Decay (LLRD) with a `llrd_factor` of `0.85` and a lower base learning rate (e.g., `5.0e-6`).
 - **Mixed Precision**: Automatic Mixed Precision (AMP) is enabled (`use_amp: true`) for performance efficiency.
@@ -223,21 +223,25 @@ All models are built upon **BiomedCLIP** [`hf-hub:microsoft/BiomedCLIP-PubMedBER
 
 This section will detail the architecture and training strategies for:
 
-- **Model A: Global CLIP Baseline (Contrastive Only)**
-  - **Architecture**: Model A serves as the foundational baseline. It utilizes a **BiomedCLIP** (ViT-B/16 for vision and PubMedBERT for text) as its backbone. It exclusively relies on global image and text embeddings, which are mapped into a shared latent space ($d=512$) via projection heads. Masking and local alignment features are disabled.
+### **Model A**: Global CLIP Baseline (Contrastive Only)
 
-  The total loss for Model A is the InfoNCE Full loss, defined as:
+**Architecture**: Model A serves as the foundational baseline. It utilizes a **BiomedCLIP** (ViT-B/16 for vision and PubMedBERT for text) as its backbone. It exclusively relies on global image and text embeddings, which are mapped into a shared latent space ($d=512$) via projection heads. Masking and local alignment features are **disabled**.
 
-  $$ L*{total} = L*{NCE-full} = -\frac{1}{N} \sum*{i=1}^{N} \left[ \log \frac{\exp(\mathbf{v}\_i \cdot \mathbf{t}\_i / \tau)}{\sum*{j=1}^{N} \exp(\mathbf{v}_i \cdot \mathbf{t}\_j / \tau)} + \log \frac{\exp(\mathbf{t}\_i \cdot \mathbf{v}\_i / \tau)}{\sum_{j=1}^{N} \exp(\mathbf{t}\_i \cdot \mathbf{v}\_j / \tau)} \right] $$
+The total loss for Model A is the InfoNCE Full loss, defined as:
 
-  Where $N$ is the batch size, $\mathbf{v}_i$ and $\mathbf{t}_i$ are the image and text embeddings for the $i$-th sample, and $\tau$ is the temperature parameter.
-  - **Configuration**:
+$$ L*{total} = L*{NCE-full} = -\frac{1}{N} \sum*{i=1}^{N} \left[ \log \frac{\exp(\mathbf{v}\_i \cdot \mathbf{t}\_i / \tau)}{\sum*{j=1}^{N} \exp(\mathbf{v}_i \cdot \mathbf{t}\_j / \tau)} + \log \frac{\exp(\mathbf{t}\_i \cdot \mathbf{v}\_i / \tau)}{\sum_{j=1}^{N} \exp(\mathbf{t}\_i \cdot \mathbf{v}\_j / \tau)} \right] $$
+
+Where:
+
+- $N$ is the **batch size**,
+- $\mathbf{v}_i$ and $\mathbf{t}_i$ are the image and text **embeddings** for the $i$-th sample,
+- $\tau$ is the **temperature parameter**.
+
+**Configuration**:
 
 | Parameter                     | Value      | Description                                              |
 | :---------------------------- | :--------- | :------------------------------------------------------- |
-| `use_masking`                 | `false`    | Patch-IB masking disabled                                |
-| `use_local_alignment`         | `false`    | Local token-patch alignment disabled                     |
-| `temperature`                 | `0.1`      | Initial temperature for InfoNCE loss                     |
+| `temperature`                 | `0.2`      | Initial temperature for InfoNCE loss                     |
 | `contrastive_weight_i2t`      | `0.5`      | Weight for image-to-text loss                            |
 | `contrastive_weight_t2i`      | `0.5`      | Weight for text-to-image loss                            |
 | `epochs`                      | `40`       | Maximum training epochs                                  |
@@ -248,22 +252,48 @@ This section will detail the architecture and training strategies for:
 | `warmup_steps`                | `1000`     | LR warmup steps (linear)                                 |
 | `early_stopping_metric`       | `combined` | Metric to monitor: `0.6 * Recall + 0.4 * AUC`            |
 | `early_stopping_patience`     | `10`       | Epochs without improvement before stopping               |
-| `batch_size`                  | `64`       | Batch size per GPU                                       |
+| `batch_size`                  | `96`       | Batch size per GPU                                       |
 | `gradient_accumulation_steps` | `2`        | Accumulate gradients over N steps (effective batch: 128) |
 | `use_amp`                     | `true`     | Enable mixed precision (FP16)                            |
 | `llrd_factor`                 | `0.85`     | Layer-wise LR decay factor                               |
+
+#### Learning Rate Distribution (LLRD)
+
+When `llrd_factor` is set to `0.85`, the learning rates are distributed across the model's layers as follows:
+
+| Parameter Group | Parameters  | Learning Rate |
+| :-------------- | :---------- | :------------ |
+| `embeddings`    | 741,888     | 7.11e-07      |
+| `layer_0`       | 7,077,888   | 8.37e-07      |
+| `layer_1`       | 7,077,888   | 9.84e-07      |
+| `layer_2`       | 7,077,888   | 1.16e-06      |
+| `layer_3`       | 7,077,888   | 1.36e-06      |
+| `layer_4`       | 7,077,888   | 1.60e-06      |
+| `layer_5`       | 7,077,888   | 1.89e-06      |
+| `layer_6`       | 7,077,888   | 2.22e-06      |
+| `layer_7`       | 7,077,888   | 2.61e-06      |
+| `layer_8`       | 7,077,888   | 3.07e-06      |
+| `layer_9`       | 7,077,888   | 3.61e-06      |
+| `layer_10`      | 7,077,888   | 4.25e-06      |
+| `layer_11`      | 7,077,888   | 5.00e-06      |
+| `head`          | 3,309,568   | 5.00e-06      |
+| `other`         | 108,789,504 | 5.00e-06      |
+| `no_decay`      | 227,841     | 5.00e-06      |
 
 ### Evaluation Results (Test Set)
 
 #### Performance Metrics
 
-| Metric   | I2T (%) | T2I (%) | Value |
-| :------- | :------ | :------ | :---- |
-| `R@1`    | 20.69   | 19.38   |       |
-| `R@5`    | 48.37   | 48.95   |       |
-| `R@10`   | 62.76   | 60.87   |       |
-| Mean AUC |         |         | 0.765 |
-| Mean AP  |         |         | 0.343 |
+| Metric | I2T (%) | T2I (%) | Value |
+| :----- | :------ | :------ | :---- |
+| `R@1`  | 20.69   | 19.38   |       |
+| `R@5`  | 48.37   | 48.95   |       |
+| `R@10` | 62.76   | 60.87   |       |
+
+| Metric   | Value |
+| :------- | :---- |
+| Mean AUC | 0.765 |
+| Mean AP  | 0.343 |
 
 ##### Efficiency Metrics
 
