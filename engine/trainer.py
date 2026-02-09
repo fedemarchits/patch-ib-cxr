@@ -20,6 +20,7 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
     consistency_criterion = criterion.get('consistency', None)
     consistency_weight = criterion.get('consistency_weight', 1.0)
     sparsity_weight = criterion.get('sparsity_weight', 10.0)
+    sparsity_warmup_steps = criterion.get('sparsity_warmup_steps', 0)
 
     loop = tqdm(dataloader, desc=f"Epoch {epoch}")
 
@@ -74,7 +75,11 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
             # Sparsity loss (if masking enabled)
             loss_sparse = None
             if logits is not None:
-                loss_sparse = sparsity_criterion(logits) * sparsity_weight
+                if sparsity_warmup_steps > 0:
+                    sparsity_warmup_factor = min(1.0, global_step / sparsity_warmup_steps)
+                else:
+                    sparsity_warmup_factor = 1.0
+                loss_sparse = sparsity_criterion(logits) * sparsity_weight * sparsity_warmup_factor
                 loss = loss + loss_sparse
 
             # Consistency loss (if Patch-IB enabled)
@@ -170,6 +175,7 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
             }
             if loss_sparse is not None:
                 log_dict["train/sparsity_loss"] = loss_sparse.item()
+                log_dict["train/sparsity_weight_current"] = sparsity_weight * sparsity_warmup_factor
 
             # Sparsity tracking (actual mask statistics)
             if logits is not None:

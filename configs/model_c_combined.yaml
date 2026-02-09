@@ -20,6 +20,7 @@ model:
   # Sparsity loss weight (L1 penalty on mask activations)
   use_sparsity_loss: true
   sparsity_weight: 10.0
+  sparsity_warmup_steps: 200
 
   # Consistency loss (keep masked embedding close to full embedding)
   consistency_weight: 1.0

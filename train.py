@@ -151,6 +151,7 @@ def main():
             )
             criterions['consistency_weight'] = cfg['model'].get('consistency_weight', 1.0)
             criterions['sparsity_weight'] = cfg['model'].get('sparsity_weight', 10.0)
+            criterions['sparsity_warmup_steps'] = cfg['model'].get('sparsity_warmup_steps', 0)
 
         # GradScaler for mixed precision
         scaler = torch.amp.GradScaler(device, enabled=use_amp)
