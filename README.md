@@ -268,27 +268,33 @@ This section will detail the architecture and training strategies for:
 | Peak VRAM  | 3576.84 | MB      |
 
 - **Training Progress Visualizations**:
-<div style="display: flex; justify-content: space-around; flex-wrap: wrap;">
-    <div style="flex: 1 1 48%; margin: 1%;">
-        <img src="imgs/model-a-staged-training_train_val_loss.png" alt="Model A Training & Validation Loss" style="width: 100%;"/>
-        _Figure: Model A Training and Validation Loss over Epochs_
-    </div>
-    <div style="flex: 1 1 48%; margin: 1%;">
-        <img src="imgs/model-a-staged-training_combined_metric.png" alt="Model A Combined Metric" style="width: 100%;"/>
-        _Figure: Model A Combined Metric (Recall + AUC) over Epochs_
-    </div>
-    <div style="flex: 1 1 48%; margin: 1%;">
-        <img src="imgs/model-a-staged-training_mean_recall.png" alt="Model A Mean Retrieval Recall" style="width: 100%;"/>
-        _Figure: Model A Mean Retrieval Recall over Epochs_
-    </div>
-    <div style="flex: 1 1 48%; margin: 1%;">
-        <img src="imgs/model-a-staged-training_mean_auc.png" alt="Model A Mean Classification AUC" style="width: 100%;"/>
-        _Figure: Model A Mean Classification AUC over Epochs_
-    </div>
-    <div style="flex: 1 1 48%; margin: 1%;">
-        <img src="imgs/model-a-staged-training_learning_rate.png" alt="Model A Learning Rate Schedule" style="width: 100%;"/>
-        _Figure: Model A Learning Rate Schedule over Training Steps_
-    </div>
-</div>
+<table>
+    <tr>
+        <td style="text-align: center;">
+            <img src="imgs/model-a-staged-training_train_val_loss.png" alt="Model A Training & Validation Loss" style="width: 100%;"/>
+            <br>_Figure: Model A Training and Validation Loss over Epochs_
+        </td>
+        <td style="text-align: center;">
+            <img src="imgs/model-a-staged-training_combined_metric.png" alt="Model A Combined Metric" style="width: 100%;"/>
+            <br>_Figure: Model A Combined Metric (Recall + AUC) over Epochs_
+        </td>
+    </tr>
+    <tr>
+        <td style="text-align: center;">
+            <img src="imgs/model-a-staged-training_mean_recall.png" alt="Model A Mean Retrieval Recall" style="width: 100%;"/>
+            <br>_Figure: Model A Mean Retrieval Recall over Epochs_
+        </td>
+        <td style="text-align: center;">
+            <img src="imgs/model-a-staged-training_mean_auc.png" alt="Model A Mean Classification AUC" style="width: 100%;"/>
+            <br>_Figure: Model A Mean Classification AUC over Epochs_
+        </td>
+    </tr>
+    <tr>
+        <td colspan="2" style="text-align: center;">
+            <img src="imgs/model-a-staged-training_learning_rate.png" alt="Model A Learning Rate Schedule" style="width: 100%;"/>
+            <br>_Figure: Model A Learning Rate Schedule over Training Steps_
+        </td>
+    </tr>
+</table>
 
 - ...
