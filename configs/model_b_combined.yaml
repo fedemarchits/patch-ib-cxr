@@ -12,7 +12,7 @@ model:
   text_backbone: "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
   mask_ratio: 0.5
   temperature: 0.1
-  contrastive_mask_weight: 1.0   # Weight for contrastive loss
+  contrastive_mask_weight: 1.0 # Weight for contrastive loss
   contrastive_full_weight: 1.0
   use_masking: false
   use_sparsity_loss: false
@@ -21,8 +21,8 @@ model:
   local_alignment_temperature: 0.7
   # Disable uncertainty weighting for now, use fixed weight
   use_uncertainty_weighting: false
-  local_alignment_weight: 100
-  local_alignment_warmup_steps: 500
+  local_alignment_weight: 1000
+  local_alignment_warmup_steps: 3333
   # Multi-head cross-attention (thesis Section 11.1)
   local_alignment_n_heads: 4
   local_alignment_dropout: 0.1
@@ -42,14 +42,14 @@ training:
   eval_auc_every: 1
 
   epochs: 40
-  lr: 5.0e-6
-  weight_decay: 0.01
+  lr: 1.0e-5
+  weight_decay: 0.02
   warmup_steps: 1000
-  early_stopping_patience: 7
+  early_stopping_patience: 6
   print_freq: 50
   device: "cuda"
   use_amp: true
-  gradient_accumulation_steps: 2
+  gradient_accumulation_steps: 3
   # Light fine-tuning options
   freeze_backbone: false
   llrd_factor: 0.85 # Layer-wise LR decay: early layers get 0.85x LR of next layer
