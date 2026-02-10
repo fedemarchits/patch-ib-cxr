@@ -28,5 +28,5 @@ docker run \
     --memory="40g" \
     --shm-size="8g" \
     --gpus '"device='"$CUDA_VISIBLE_DEVICES"'"' \
-    patch_ib_img \
+    patch_ib_img2:flops \
     "/workspace/$SCRIPT" "$@"
