@@ -13,24 +13,25 @@ model:
   temperature: 0.1
 
   # Contrastive loss weights
-  contrastive_mask_weight: 1.0   # Weight for L_NCE-mask (on masked embedding)
-  contrastive_full_weight: 1.0   # Weight for L_NCE-full (on full embedding)
+  contrastive_mask_weight: 1.0 # Weight for L_NCE-mask (on masked embedding)
+  contrastive_full_weight: 1.0 # Weight for L_NCE-full (on full embedding)
 
   # ============ MODEL D: TOP-K PATCH SELECTION ============
   # Enable masking with Top-K selection (instead of threshold)
   use_masking: true
-  use_topk_masking: true  # Key difference from Model C
+  use_topk_masking: true # Key difference from Model C
 
   # Top-K ratio: fraction of patches to keep
   # 0.25 = keep 25% = 49 patches out of 196
   # Lower = more compression, higher efficiency
   k_ratio: 0.25
-  k_ratio_start: 0.5          # Start keeping 50% of patches
-  k_ratio_anneal_steps: 2000  # Linearly anneal to k_ratio over this many steps
+  k_ratio_start: 0.5 # Start keeping 50% of patches
+  k_ratio_anneal_steps: 6666 # Linearly anneal to k_ratio over this many steps
 
   # Sparsity loss (helps learn meaningful importance scores)
   use_sparsity_loss: true
-  sparsity_weight: 5.0  # Lower than Model C since sparsity is guaranteed
+  sparsity_weight: 5.0 # Lower than Model C since sparsity is guaranteed
+  sparsity_warmup_steps: 6666
 
   # Consistency loss (keep masked embedding close to full embedding)
   consistency_weight: 1.0
@@ -41,8 +42,8 @@ model:
   use_local_alignment: true
   local_alignment_temperature: 0.7
   use_uncertainty_weighting: false
-  local_alignment_weight: 100
-  local_alignment_warmup_steps: 500
+  local_alignment_weight: 1000
+  local_alignment_warmup_steps: 3333
   local_alignment_n_heads: 4
   local_alignment_dropout: 0.1
 
@@ -57,14 +58,14 @@ training:
   eval_auc_every: 1
 
   epochs: 40
-  lr: 5.0e-6
-  weight_decay: 0.01
-  warmup_steps: 1000
-  early_stopping_patience: 7
+  lr: 1.0e-5
+  weight_decay: 0.02
+  warmup_steps: 500
+  early_stopping_patience: 6
   print_freq: 50
   device: "cuda"
   use_amp: true
-  gradient_accumulation_steps: 2
+  gradient_accumulation_steps: 3
 
   # Fine-tuning options
   freeze_backbone: false
