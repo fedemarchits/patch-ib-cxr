@@ -142,6 +142,37 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
             # Scale loss by accumulation steps for gradient averaging
             loss = loss / accumulation_steps
 
+        # Compute per-loss gradient norms (only on logging steps to minimize overhead)
+        grad_norms = {}
+        if wandb_run and num_batches % log_every_n_steps == 0:
+            shared_params = [p for p in model.parameters() if p.requires_grad]
+
+            def _grad_norm(loss_tensor):
+                grads = torch.autograd.grad(loss_tensor, shared_params, retain_graph=True, allow_unused=True)
+                return torch.sqrt(sum(g.norm() ** 2 for g in grads if g is not None)).item()
+
+            # Contrastive losses gradient norm (masked + full)
+            contrastive_total = loss_con * contrastive_mask_weight
+            if loss_con_full is not None:
+                contrastive_total = contrastive_total + loss_con_full * contrastive_full_weight
+            grad_norms['contrastive'] = _grad_norm(contrastive_total)
+
+            # Local alignment gradient norm (weighted as it enters the total loss)
+            if loss_local is not None:
+                if use_uncertainty and hasattr(model, 'log_var_local'):
+                    local_total = loss_local
+                else:
+                    local_total = local_weight * loss_local
+                grad_norms['local'] = _grad_norm(local_total)
+
+            # Sparsity loss gradient norm
+            if loss_sparse is not None:
+                grad_norms['sparsity'] = _grad_norm(loss_sparse)
+
+            # Consistency loss gradient norm
+            if loss_consistency is not None:
+                grad_norms['consistency'] = _grad_norm(loss_consistency)
+
         scaler.scale(loss).backward()
 
         # Only update weights every accumulation_steps
@@ -253,6 +284,17 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
                     log_dict["loss_balance/local_contribution_pct"] = 100 * weighted_local / (contrastive_val + weighted_local + 1e-8)
                     log_dict["loss_balance/contrastive_contribution_pct"] = 100 * contrastive_val / (contrastive_val + weighted_local + 1e-8)
                     log_dict["train/local_weight_current"] = local_weight
+
+            # Gradient norm logging
+            if grad_norms:
+                for name, norm in grad_norms.items():
+                    log_dict[f"gradients/{name}_grad_norm"] = norm
+                # Ratios (contrastive as reference)
+                con_norm = grad_norms.get('contrastive', None)
+                if con_norm is not None:
+                    for name, norm in grad_norms.items():
+                        if name != 'contrastive':
+                            log_dict[f"gradients/contrastive_to_{name}_ratio"] = con_norm / (norm + 1e-8)
 
             wandb_run.log(log_dict)
 
