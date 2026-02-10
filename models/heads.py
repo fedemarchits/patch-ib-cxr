@@ -102,6 +102,7 @@ class MaskHeadTopK(nn.Module):
         """
         super().__init__()
         self.k_ratio = k_ratio
+        self._current_k_ratio = k_ratio  # Mutable ratio (for annealing)
 
         # Simple MLP to predict importance score for each patch
         self.predictor = nn.Sequential(
@@ -125,8 +126,8 @@ class MaskHeadTopK(nn.Module):
         # Compute importance logits
         logits = self.predictor(patch_embeddings).squeeze(-1)  # (B, M)
 
-        # Compute K based on ratio
-        K = max(1, int(M * self.k_ratio))
+        # Compute K based on current (possibly annealed) ratio
+        K = max(1, int(M * self._current_k_ratio))
 
         # Get binary mask using straight-through estimator
         mask = TopKStraightThrough.apply(logits, K)
@@ -135,6 +136,10 @@ class MaskHeadTopK(nn.Module):
         _, topk_indices = torch.topk(logits, K, dim=1)
 
         return mask, logits, topk_indices
+
+    def set_k_ratio(self, ratio):
+        """Update k_ratio (used for annealing during training)."""
+        self._current_k_ratio = ratio
 
     def get_selected_patches(self, patch_embeddings, topk_indices):
         """

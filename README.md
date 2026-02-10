@@ -42,7 +42,7 @@ Experiments are conducted in a containerized environment to ensure consistency.
 
 ---
 
-# 📊 Dataset Analysis & Generation Logic
+## 📊 Dataset Analysis & Generation Logic
 
 The final dataset, `mimic_master_official_split.jsonl` considers only frontal AP and PA images for a total of 213364 samples.
 
@@ -98,14 +98,14 @@ The master dataset was constructed using a rigorous four-stage pipeline to ensur
 
 ---
 
-### 💡 Thesis Impact
+#### 💡 Thesis Impact
 
 - **Scaling**: Moving from a ~60k keyword subset to a **218k full-text master file** provided the supervision density required for the model to breakthrough the 5% Recall@1 barrier.
 - **Reproducibility**: By adhering to official splits, this implementation allows for direct benchmarking against models like **GLoRIA** and **BioViL**.
 
 ---
 
-### 🏆 Benchmarking & SOTA Comparison (Chronological)
+## 🏆 Benchmarking & SOTA Comparison (Chronological)
 
 Our model's performance on the official MIMIC-CXR test set is compared against the evolution of the field, from foundational baselines (2020) to current State-of-the-Art (2024-2025).
 
@@ -118,7 +118,7 @@ Our model's performance on the official MIMIC-CXR test set is compared against t
 | **BioViL-L** [5] | 2023 |   27.4%   |   68.2%    |   0.821   |
 | **MAIRA-2** [6]  | 2024 | **31.2%** | **74.5%**  | **0.868** |
 
-### 📚 Literature References
+#### 📚 Literature References
 
 1. [Zhang et al. (2020) - ConVIRT](https://arxiv.org/abs/2010.00747)
 2. [Huang et al. (2021) - GLoRIA](https://arxiv.org/abs/2104.04687)
@@ -138,36 +138,36 @@ We evaluate the model's zero-shot classification performance across the 14 stand
 
 ---
 
-# 🧠 Model Architecture & Progression
+## 🧠 Model Architecture & Progression
 
 The project follows a staged development from a standard global baseline to a highly efficient, interpretability-focused Patch-IB model. The architecture is built on top of **BiomedCLIP** (ViT-B/16 + PubMedBERT).
 
 ---
 
-## 🏗️ Core Architecture Components
+### 🏗️ Core Architecture Components
 
 Our model extends the standard CLIP framework with specialized heads and alignment modules:
 
-### 1. Global Projection Heads
+#### 1. Global Projection Heads
 
 - **Image Projector**: Maps pooled ViT patch features into a shared latent space ($d=512$).
 - **Text Projector**: Maps the BERT `[CLS]` token embedding into the same shared space.
 - **Loss**: **InfoNCE Full** ($\mathcal{L}_{NCE-full}$) ensures the model distinguishes matching image-report pairs from distractors in the batch
 
-### 2. Spatial Mask Head (Patch-IB)
+#### 2. Spatial Mask Head (Patch-IB)
 
 - **Logic**: A lightweight head $z = \sigma(w_{z}^{\top}v_{ij}+b_{z})$ that assigns a salience score $\in (0,1)$ to each of the 196 patches
 - **Goal**: Identifying the **Information Bottleneck (IB)**—the minimum subset of patches required to retain the model's discriminative power
 - **Optimization**: Controlled by a sparsity constraint ($\mathcal{L}_{sparse}$) and a consistency loss ($\mathcal{L}_{cons}$) to ensure the masked image behaves similarly to the full image
 
-### 3. Local Alignment Head (Grounding)
+#### 3. Local Alignment Head (Grounding)
 
 - **Cross-Attention**: Uses text tokens as **queries** and image patches as **keys/values**.
 - **Loss**: **Local Loss** ($\mathcal{L}_{local}$) minimizes the distance between text-aligned patch summaries and their corresponding word embeddings, forcing clinical grounding.
 
 ---
 
-## 📈 Experimental Progression (Ablation Study)
+### 📈 Experimental Progression (Ablation Study)
 
 | Model       | Variant        | Global CLIP | Local Align | Patch-IB | Top-K/Dropping |
 | :---------- | :------------- | :---------: | :---------: | :------: | :------------: |
@@ -179,38 +179,132 @@ Our model extends the standard CLIP framework with specialized heads and alignme
 
 ---
 
-## ⚙️ Common Training and Evaluation Settings
+### ⚙️ Common Training and Evaluation Settings
 
 Unless otherwise specified for a particular model, the following configurations and practices apply across all experiments:
 
-### Foundation Model
+#### Foundation Model
 
-All models are built upon **BiomedCLIP** [`hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224`](https://huggingface.co/microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224) as the foundation model, utilizing its ViT-B/16 for the vision backbone and PubMedBERT for the text backbone.
+All experiments in this repository utilize **BiomedCLIP** (`microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224`) as the base foundation model. This model was specifically designed for biomedical image-text processing and pretrained on **PMC-15M**, a large-scale dataset of 15 million figure-caption pairs from biomedical research articles.
 
-### Data Configuration
+#### 🏗️ Model Architecture
+
+BiomedCLIP follows a dual-stream Transformer architecture, consisting of a vision encoder and a text encoder projected into a shared latent space.
+
+##### 1. Vision Encoder: ViT-B/16
+
+- **Architecture**: Vision Transformer (ViT) Base.
+- **Input Resolution**: $224 \times 224$ pixels.
+- **Patch Size**: $16 \times 16$ pixels, resulting in 196 image patches.
+- **Function**: The image is treated as a sequence of patches, where each patch is embedded and processed through 12 Transformer layers to capture spatial and semantic hierarchies.
+
+##### 2. Text Encoder: PubMedBERT
+
+- **Architecture**: BERT-base.
+- **Pretraining**: Unlike standard CLIP (which uses a generic text encoder), BiomedCLIP uses **PubMedBERT**, which was pretrained from scratch on the full text of PubMed abstracts and articles.
+- **Max Length**: 256 tokens.
+- **Function**: This allows the model to deeply understand complex medical terminology (e.g., "cardiac silhouette", "interstitial opacities") that generic encoders often fail to represent accurately.
+
+#### 🛰️ Pretraining Objective
+
+BiomedCLIP was pretrained using a standard **Contrastive Language-Image Pretraining (CLIP)** objective. The model learns by maximizing the cosine similarity between matched image-caption pairs and minimizing it for unmatched pairs within a batch (InfoNCE loss).
+
+##### Key Statistics:
+
+| Feature           | Specification               |
+| :---------------- | :-------------------------- |
+| **Dataset**       | PMC-15M (15 Million Pairs)  |
+| **Domain**        | Biomedical / Clinical       |
+| **Embedding Dim** | 768 (projected to 512)      |
+| **Tokenization**  | WordPiece (domain-specific) |
+
+#### 🔗 Model Source
+
+- **HuggingFace Hub**: [microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224](https://huggingface.co/microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224)
+
+#### Data Configuration
 
 - **Dataset**: MIMIC-CXR (`mimic_master_official_split.jsonl`)
 - **Image Root**: `/datasets/MIMIC-CXR/files`
 - **Image Size**: 224x224 pixels
 - **Data Loaders**: 4 workers per DataLoader, ensuring efficient data loading.
 
-### Training Strategy
+#### Training Strategy
 
-- **Optimizer**: AdamW.
-- **Learning Rate Schedule**: Cosine decay with linear warmup (typically `1000` warmup steps).
-- **Staged Training**: Some models employ a two/three-phase staged training approach unless `staged_training`, this stabilized the training for most simple models;
-  - **Phase 1 (Warmup)**: Backbone frozen, only projection heads and `logit_scale` trained at a higher learning rate (e.g., `1.0e-4`) for a few epochs (e.g., `3` epochs).
-  - **Phase 2 (Fine-tuning)**: Backbone unfrozen, all parameters fine-tuned with Layer-wise Learning Rate Decay (LLRD) with a `llrd_factor` of `0.85` and a lower base learning rate (e.g., `5.0e-6`).
-- **Mixed Precision**: Automatic Mixed Precision (AMP) is enabled (`use_amp: true`) for performance efficiency.
-- **Gradient Accumulation**: Gradients are accumulated over `2` steps (`gradient_accumulation_steps: 2`), resulting in an effective batch size of `128` when the per-GPU `batch_size` is `64`.
+##### Optimization Strategy and Learning Rate Dynamics
 
-### Early Stopping
+For the training and fine-tuning of the model, I selected the **AdamW** optimizer. This choice is driven by its ability to handle the decoupled weight decay required for Transformer stability and its prevalence in state-of-the-art Vision-Language Model (VLM) literature.
+
+###### Learning Rate Selection
+
+The base learning rate was set to **$5.0 \times 10^{-6}$**. In the context of deep learning, this is considered a **very low learning rate**. This conservative choice is intentional for several reasons:
+
+- **Foundation Model Preservation**: Since the backbones (ViT-B/16 and PubMedBERT) are already pretrained on massive datasets (PMC-15M), a high learning rate would risk "catastrophic forgetting," where the model loses its broad medical knowledge in favor of overfitting to the specific nuances of the local dataset.
+- **Fine-Grained Alignment**: The **LocalAlignModule** and **Patch-IB** masking heads require precise, incremental updates to find the delicate mathematical balance between global retrieval and local anatomical grounding.
+- **Stability with Small Batches**: Given the high memory requirements of processing high-resolution medical images, low learning rates ensure stable gradient updates even when using gradient accumulation.
+
+During the initial hyperparameter search, higher learning rates (e.g., $1.0 \times 10^{-4}$) were evaluated but ultimately discarded due to several critical failure modes:
+
+- **Validation Instability**: Large weight updates caused the model to overshoot optimal regions in the loss landscape, leading to erratic oscillations in validation metrics.
+- **Optimization Convergence**: The complexity of the multi-task objective—balancing Global, Local, and Sparsity losses—required a narrower "search corridor." High learning rates prevented the model from settling into a stable joint minimum.
+- **Representation Collapse**: Most significantly, higher rates frequently triggered a collapse in the latent space, where the encoders (ViT and BERT) mapped diverse inputs to nearly identical embeddings. This "shortcut" learning resulted in low training loss but a total failure in retrieval (Recall) and discriminative tasks (AUC).
+
+By transitioning to a more conservative base learning rate of **$5.0 \times 10^{-6}$** combined with **Layer-wise Learning Rate Decay (LLRD)**, the training process achieved the necessary granularity to refine the pretrained BiomedCLIP backbones while successfully grounding the new **LocalAlignModule** and **Patch-IB** heads.
+
+> 🔍 I've noticed that with a higher **lr** and without **LLRD** the model would quickly forget some pre-learned knowledge in the first epochs, leading to lower performances at the end in terms of Retrievial (AUC as well, but less).
+
+###### 🧬 Layer-wise Learning Rate Decay (LLRD)
+
+To further refine the training process, I implemented **LLRD** with a factor of **0.85**. This technique acknowledges that different layers of a Transformer capture different levels of abstraction. By applying a decay factor, we ensure that the foundational "low-level" layers (like early edge detectors in the ViT) remain stable, while the "high-level" semantic layers and the custom heads remain more plastic for task-specific adaptation.
+
+When the `llrd_factor` is set to `0.85`, the learning rates are distributed as follows:
+
+| Parameter Group | Parameters  | Learning Rate |
+| :-------------- | :---------- | :------------ |
+| `embeddings`    | 741,888     | 7.11e-07      |
+| `layer_0`       | 7,077,888   | 8.37e-07      |
+| `layer_1`       | 7,077,888   | 9.84e-07      |
+| `layer_2`       | 7,077,888   | 1.16e-06      |
+| `layer_3`       | 7,077,888   | 1.36e-06      |
+| `layer_4`       | 7,077,888   | 1.60e-06      |
+| `layer_5`       | 7,077,888   | 1.89e-06      |
+| `layer_6`       | 7,077,888   | 2.22e-06      |
+| `layer_7`       | 7,077,888   | 2.61e-06      |
+| `layer_8`       | 7,077,888   | 3.07e-06      |
+| `layer_9`       | 7,077,888   | 3.61e-06      |
+| `layer_10`      | 7,077,888   | 4.25e-06      |
+| `layer_11`      | 7,077,888   | 5.00e-06      |
+| `head`          | 3,309,568   | 5.00e-06      |
+| `other`         | 108,789,504 | 5.00e-06      |
+| `no_decay`      | 227,841     | 5.00e-06      |
+
+###### ⚖️ Decoupled and Selective Weight Decay
+
+The **AdamW** optimizer applies a weight decay of **0.01**. Following the implementation standards of models like **BiomedCLIP** and **BioViL**, I utilized **Selective Weight Decay**.
+
+- **Decoupling**: Weight decay is decoupled from the gradient update, allowing for stronger regularization without dampening the adaptive learning rate.
+- **Exclusion**: Weight decay is explicitly omitted for **biases** and **LayerNorm** parameters (`no_decay` group). This prevents the model from being penalized for maintaining architectural stability and baseline normalization.
+
+##### Mixed Precision AMP
+
+Automatic Mixed Precision (AMP) is enabled (`use_amp: true`) for performance efficiency.
+
+##### Gradient Accumulation
+
+To keepp the models as much as possible comparable with each other, and to not get OOM on the RTX 3090 I had to decrease **batch size** and increase **gradient accumulation** with growing complexity of models.
+
+In generale gradient is computed on a fixed size of **196 samples**.
+
+#### Early Stopping
 
 - **Metric**: Combined metric, calculated as a weighted average of Mean Recall@K and Mean AUC (`0.7 * Recall + 0.3 * AUC` in most cases, or `0.6 * Recall + 0.4 * AUC` for Model A).
-- **Patience**: `7` epochs (for Model A, it was `10`).
-- **AUC Evaluation**: Mean AUC is computed every epoch (`eval_auc_every: 1`) on the validation set for accurate early stopping.
+- **Patience**: can be different across models since show different behaviours.
+- **AUC Evaluation**: Mean AUC is computed every epoch (`eval_auc_every: 1`) on the validation set for accurate early stopping, it:
+  - **extracts embeddings**,
+  - a **lightweight classifier** is trained for few iterations (around 200) to predict probabilities,
+  - computes **Mean AUC**.
 
-### Evaluation
+#### Evaluation
 
 - **Metrics**: Standard evaluation includes:
   - **Retrieval**: Recall@K (R@1, R@5, R@10) for both Image-to-Text (I2T) and Text-to-Image (T2I).
@@ -223,13 +317,14 @@ All models are built upon **BiomedCLIP** [`hf-hub:microsoft/BiomedCLIP-PubMedBER
 
 This section will detail the architecture and training strategies for:
 
-### **Model A**: Global CLIP Baseline (Contrastive Only)
+### Model A: Global CLIP Baseline (Contrastive Only)
 
 **Architecture**: Model A serves as the foundational baseline. It utilizes a **BiomedCLIP** (ViT-B/16 for vision and PubMedBERT for text) as its backbone. It exclusively relies on global image and text embeddings, which are mapped into a shared latent space ($d=512$) via projection heads. Masking and local alignment features are **disabled**.
 
 The total loss for Model A is the InfoNCE Full loss, defined as:
 
-$$ L*{total} = L*{NCE-full} = -\frac{1}{N} \sum*{i=1}^{N} \left[ \log \frac{\exp(\mathbf{v}\_i \cdot \mathbf{t}\_i / \tau)}{\sum*{j=1}^{N} \exp(\mathbf{v}_i \cdot \mathbf{t}\_j / \tau)} + \log \frac{\exp(\mathbf{t}\_i \cdot \mathbf{v}\_i / \tau)}{\sum_{j=1}^{N} \exp(\mathbf{t}\_i \cdot \mathbf{v}\_j / \tau)} \right] $$
+<!-- prettier-ignore -->
+$$ L_{total} = L_{NCE-full} = -\frac{1}{N} \sum*{i=1}^{N} \left[ \log \frac{\exp(\mathbf{v}\_i \cdot \mathbf{t}\_i / \tau)}{\sum*{j=1}^{N} \exp(\mathbf{v}_i \cdot \mathbf{t}\_j / \tau)} + \log \frac{\exp(\mathbf{t}\_i \cdot \mathbf{v}\_i / \tau)}{\sum_{j=1}^{N} \exp(\mathbf{t}\_i \cdot \mathbf{v}\_j / \tau)} \right] $$
 
 Where:
 
@@ -241,7 +336,6 @@ Where:
 
 | Parameter                     | Value      | Description                                              |
 | :---------------------------- | :--------- | :------------------------------------------------------- |
-| `temperature`                 | `0.2`      | Initial temperature for InfoNCE loss                     |
 | `contrastive_weight_i2t`      | `0.5`      | Weight for image-to-text loss                            |
 | `contrastive_weight_t2i`      | `0.5`      | Weight for text-to-image loss                            |
 | `epochs`                      | `40`       | Maximum training epochs                                  |
@@ -257,7 +351,11 @@ Where:
 | `use_amp`                     | `true`     | Enable mixed precision (FP16)                            |
 | `llrd_factor`                 | `0.85`     | Layer-wise LR decay factor                               |
 
-#### Learning Rate Distribution (LLRD)
+Observations:
+
+- temperature initially set to 0.1 was increased to 0.2, since it controls the "sharpness" of the probability distribution over the pairs in the batch. The reason why I increased it is that it stabilizes the loss that
+
+##### Learning Rate Distribution (LLRD)
 
 When `llrd_factor` is set to `0.85`, the learning rates are distributed across the model's layers as follows:
 
@@ -280,9 +378,9 @@ When `llrd_factor` is set to `0.85`, the learning rates are distributed across t
 | `other`         | 108,789,504 | 5.00e-06      |
 | `no_decay`      | 227,841     | 5.00e-06      |
 
-### Evaluation Results (Test Set)
+#### Evaluation Results (Test Set)
 
-#### Performance Metrics
+##### Performance Metrics
 
 | Metric | I2T (%) | T2I (%) | Value |
 | :----- | :------ | :------ | :---- |
@@ -295,14 +393,15 @@ When `llrd_factor` is set to `0.85`, the learning rates are distributed across t
 | Mean AUC | 0.765 |
 | Mean AP  | 0.343 |
 
-##### Efficiency Metrics
+##### Efficiency Metrics (Test Set)
 
 | Metric     | Value   | Unit    |
 | :--------- | :------ | :------ |
 | Throughput | 71.84   | img/sec |
 | Peak VRAM  | 3576.84 | MB      |
 
-- **Training Progress Visualizations**:
+**Training Progress Visualizations**:
+
 <table>
     <tr>
         <td style="text-align: center;">
@@ -325,11 +424,31 @@ When `llrd_factor` is set to `0.85`, the learning rates are distributed across t
         </td>
     </tr>
     <tr>
-        <td colspan="2" style="text-align: center;">
+        <td style="text-align: center;">
+            <img src="imgs/model-a-staged-training_temperature.png" alt="Model A Learning Rate Schedule" style="width: 100%;"/>
+            <br>_Figure: Model A Learning Rate Schedule over Training Steps_
+        </td>
+        <td style="text-align: center;">
             <img src="imgs/model-a-staged-training_learning_rate.png" alt="Model A Learning Rate Schedule" style="width: 100%;"/>
             <br>_Figure: Model A Learning Rate Schedule over Training Steps_
         </td>
     </tr>
 </table>
 
-- ...
+#### Efficiency
+
+<table>
+    <tr>
+        <td style="text-align: center;">
+            <img src="imgs/model-a-staged-training_gpu_memory.png" alt="Model A Training & Validation Loss" style="width: 100%;"/>
+            <br>_Figure: Model A Training and Validation Loss over Epochs_
+        </td>
+        <td style="text-align: center;">
+            <img src="imgs/model-a-staged-training_gpu_utilization.png" alt="Model A Combined Metric" style="width: 100%;"/>
+            <br>_Figure: Model A Combined Metric (Recall + AUC) over Epochs_
+        </td>
+    </tr>
+
+### Model B: + Local Alignment
+
+Local alignment forces both bert and vit to better represent embeddings in order to align them. It also work thanks to pre training of PUDBERT model, otherwise it wouldn't know what a tumor is and so on...

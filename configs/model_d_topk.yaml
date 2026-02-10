@@ -25,6 +25,8 @@ model:
   # 0.25 = keep 25% = 49 patches out of 196
   # Lower = more compression, higher efficiency
   k_ratio: 0.25
+  k_ratio_start: 0.5          # Start keeping 50% of patches
+  k_ratio_anneal_steps: 2000  # Linearly anneal to k_ratio over this many steps
 
   # Sparsity loss (helps learn meaningful importance scores)
   use_sparsity_loss: true

@@ -298,6 +298,134 @@ def plot_metrics_from_run(run_path, output_dir="imgs"):
     else:
         print("Skipping Learning Rate plot: 'learning_rate' not found or empty.")
         
+    # --- 6. Learned Temperature (τ = 1 / exp(logit_scale)) ---
+    print("Generating Temperature plot...")
+    if 'model/temperature' in history.columns and history['model/temperature'].notna().any():
+        temp_data = history[history['model/temperature'].notna()].copy()
+        if 'epoch' not in temp_data.columns or temp_data['epoch'].isna().all():
+            temp_data['epoch'] = range(len(temp_data))
+        temp_data = temp_data.sort_values('_step' if '_step' in temp_data.columns else 'epoch')
+        temp_data = temp_data.groupby('epoch')['model/temperature'].last().reset_index()
+        temp_data = temp_data.sort_values('epoch').reset_index(drop=True)
+        # Convert exp(logit_scale) -> effective temperature τ = 1/exp(logit_scale)
+        temp_data['temperature'] = 1.0 / temp_data['model/temperature']
+
+        _, ax = plt.subplots()
+        ax.plot(temp_data['epoch'], temp_data['temperature'],
+                label='Effective Temperature (τ)', color=COLORS['yellow'], marker='o', markersize=5,
+                linewidth=2.5)
+        ax.fill_between(temp_data['epoch'], temp_data['temperature'],
+                        alpha=0.1, color=COLORS['yellow'])
+        ax.set_title('Learned Contrastive Temperature')
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('Temperature (τ)')
+        # Format y-axis as plain decimals
+        ax.yaxis.set_major_formatter(plt.FormatStrFormatter('%.4f'))
+        ax.legend(loc='best')
+        plt.savefig(os.path.join(output_dir, f"{run.name}_temperature.png"))
+        plt.close()
+        print(f"  τ range: [{temp_data['temperature'].min():.5f}, {temp_data['temperature'].max():.5f}]")
+        print(f"  Saved: {run.name}_temperature.png")
+    else:
+        print("Skipping Temperature plot: 'model/temperature' not found.")
+
+    # --- 7. Efficiency plots (step-based, not epoch-based) ---
+    # Custom efficiency metrics logged by the trainer
+    efficiency_cols = ['efficiency/step_time_ms', 'efficiency/avg_step_time_ms', 'efficiency/throughput_img_per_sec']
+    has_efficiency = any(c in history.columns and history[c].notna().any() for c in efficiency_cols)
+
+    if not has_efficiency:
+        print("Custom efficiency columns not in history(), trying scan_history()...")
+        try:
+            eff_rows = list(run.scan_history(keys=efficiency_cols + ['_step'], page_size=10000))
+            if eff_rows:
+                eff_df = pd.DataFrame(eff_rows)
+                has_efficiency = any(c in eff_df.columns and eff_df[c].notna().any() for c in efficiency_cols)
+            else:
+                eff_df = pd.DataFrame()
+        except Exception as e:
+            print(f"  scan_history failed: {e}")
+            eff_df = pd.DataFrame()
+    else:
+        eff_df = history
+
+    # Helper for step-based plots (used for both custom and system metrics)
+    def plot_step_metric(df, col, title, ylabel, color_key, filename, x_col='_step', xlabel='Training Step'):
+        if col not in df.columns or df[col].isna().all():
+            print(f"  Skipping {title}: '{col}' not found or empty.")
+            return
+        data = df.dropna(subset=[col]).copy()
+        if data.empty:
+            return
+
+        # Convert timestamps to elapsed minutes for readability
+        if x_col == '_timestamp' and '_timestamp' in data.columns:
+            t0 = data['_timestamp'].iloc[0]
+            x = (data['_timestamp'] - t0) / 60.0  # elapsed minutes
+            xlabel = 'Elapsed Time (min)'
+        elif x_col in data.columns:
+            x = data[x_col]
+        else:
+            x = data.index
+
+        _, ax = plt.subplots()
+        ax.plot(x, data[col], color=COLORS[color_key], linewidth=1.5, alpha=0.6)
+        # Add smoothed line (rolling mean)
+        if len(data) > 20:
+            smoothed = data[col].rolling(window=20, min_periods=1).mean()
+            ax.plot(x, smoothed, color=COLORS[color_key], linewidth=2.5, label=f'{ylabel} (smoothed)')
+        else:
+            ax.plot(x, data[col], color=COLORS[color_key], linewidth=2.5, label=ylabel)
+        ax.set_title(title)
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(ylabel)
+        ax.legend(loc='best')
+        plt.savefig(os.path.join(output_dir, f"{run.name}_{filename}.png"))
+        plt.close()
+        print(f"  Saved: {run.name}_{filename}.png")
+
+    if has_efficiency and not eff_df.empty:
+        print("Generating custom efficiency plots...")
+        plot_step_metric(eff_df, 'efficiency/throughput_img_per_sec',
+                         'Training Throughput', 'Images / Second', 'orange', 'throughput')
+        plot_step_metric(eff_df, 'efficiency/avg_step_time_ms',
+                         'Average Step Time', 'Time (ms)', 'cyan', 'step_time')
+    else:
+        print("No custom efficiency metrics found.")
+
+    # --- 7. W&B System Metrics (GPU memory, utilization, etc.) ---
+    # These are automatically tracked by wandb under a separate stream.
+    print("Fetching W&B system metrics...")
+    try:
+        sys_metrics = run.history(stream='events', samples=5000, pandas=True)
+        if sys_metrics is not None and not sys_metrics.empty:
+            sys_cols = [c for c in sys_metrics.columns if any(
+                k in c.lower() for k in ['gpu', 'memory', 'cpu', 'disk', 'network', 'temp']
+            )]
+            if sys_cols:
+                print(f"  Found system metrics: {sys_cols}")
+
+            # GPU Memory
+            gpu_mem_col = next((c for c in sys_metrics.columns if 'gpu' in c.lower() and 'memory' in c.lower()), None)
+            if gpu_mem_col:
+                print("Generating GPU Memory plot...")
+                plot_step_metric(sys_metrics, gpu_mem_col,
+                                 'GPU Memory Usage', 'Memory (%)', 'blue', 'gpu_memory',
+                                 x_col='_timestamp', xlabel='Time')
+
+            # GPU Utilization
+            gpu_util_col = next((c for c in sys_metrics.columns
+                                 if 'gpu' in c.lower() and ('util' in c.lower() or c.lower().endswith('gpu.0.gpu'))), None)
+            if gpu_util_col:
+                print("Generating GPU Utilization plot...")
+                plot_step_metric(sys_metrics, gpu_util_col,
+                                 'GPU Utilization', 'Utilization (%)', 'green', 'gpu_utilization',
+                                 x_col='_timestamp', xlabel='Time')
+        else:
+            print("  No system metrics found for this run.")
+    except Exception as e:
+        print(f"  Could not fetch system metrics: {e}")
+
     print(f"\nPlots saved to '{output_dir}' directory.")
 
 
@@ -318,8 +446,9 @@ if __name__ == "__main__":
     
     # Check for dependencies
     try:
-        import pandas
-        import matplotlib
+        import importlib
+        importlib.import_module('pandas')
+        importlib.import_module('matplotlib')
     except ImportError:
         print("This script requires 'pandas' and 'matplotlib'.")
         print("Please install them using: pip install pandas matplotlib")

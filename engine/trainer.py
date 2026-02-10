@@ -24,6 +24,11 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
     contrastive_mask_weight = criterion.get('contrastive_mask_weight', 1.0)
     contrastive_full_weight = criterion.get('contrastive_full_weight', 1.0)
 
+    # Top-K ratio annealing (Model D)
+    k_ratio_start = criterion.get('k_ratio_start', None)
+    k_ratio_end = criterion.get('k_ratio_end', None)
+    k_ratio_anneal_steps = criterion.get('k_ratio_anneal_steps', 0)
+
     loop = tqdm(dataloader, desc=f"Epoch {epoch}")
 
     for batch_idx, batch in enumerate(loop):
@@ -41,6 +46,15 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
         # Only zero gradients at the start of accumulation cycle
         if batch_idx % accumulation_steps == 0:
             optimizer.zero_grad()
+
+        # Anneal k_ratio for Top-K masking (Model D)
+        if k_ratio_start is not None and hasattr(model, 'mask_head') and hasattr(model.mask_head, 'set_k_ratio'):
+            if k_ratio_anneal_steps > 0:
+                progress = min(1.0, global_step / k_ratio_anneal_steps)
+            else:
+                progress = 1.0
+            current_k_ratio = k_ratio_start + (k_ratio_end - k_ratio_start) * progress
+            model.mask_head.set_k_ratio(current_k_ratio)
 
         with torch.amp.autocast(device_type=device, enabled=use_amp):
             # Model returns 5 values: img_emb (masked if use_masking), txt_emb, logits, local_features, img_emb_full
@@ -196,6 +210,8 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
                     log_dict["mask/patches_kept_ratio"] = patches_kept_ratio
                     log_dict["mask/patches_kept_per_image"] = patches_kept_per_image
                     log_dict["mask/patches_dropped_ratio"] = 1.0 - patches_kept_ratio
+                    if k_ratio_start is not None:
+                        log_dict["mask/k_ratio_current"] = current_k_ratio
 
             # Patch-IB specific logging
             if loss_con_full_raw is not None:

@@ -132,7 +132,7 @@ def main():
         weight_t2i = cfg['model'].get('contrastive_weight_t2i', 0.5)
         criterions = {
             'contrastive': ContrastiveLoss(weight_i2t=weight_i2t, weight_t2i=weight_t2i),
-            'sparsity': SparsityLoss(target_ratio=cfg['model']['mask_ratio']),
+            'sparsity': SparsityLoss(target_ratio=cfg['model'].get('mask_ratio', cfg['model'].get('k_ratio', 0.25))),
             'contrastive_mask_weight': cfg['model'].get('contrastive_mask_weight', 1.0),
             'contrastive_full_weight': cfg['model'].get('contrastive_full_weight', 1.0),
         }
@@ -154,6 +154,13 @@ def main():
             criterions['consistency_weight'] = cfg['model'].get('consistency_weight', 1.0)
             criterions['sparsity_weight'] = cfg['model'].get('sparsity_weight', 10.0)
             criterions['sparsity_warmup_steps'] = cfg['model'].get('sparsity_warmup_steps', 0)
+
+            # Top-K ratio annealing (Model D)
+            if cfg['model'].get('use_topk_masking', False) and 'k_ratio_start' in cfg['model']:
+                criterions['k_ratio_start'] = cfg['model']['k_ratio_start']
+                criterions['k_ratio_end'] = cfg['model'].get('k_ratio', 0.25)
+                criterions['k_ratio_anneal_steps'] = cfg['model'].get('k_ratio_anneal_steps', 2000)
+                print(f"Top-K annealing: {criterions['k_ratio_start']:.2f} -> {criterions['k_ratio_end']:.2f} over {criterions['k_ratio_anneal_steps']} steps")
 
         # GradScaler for mixed precision
         scaler = torch.amp.GradScaler(device, enabled=use_amp)
