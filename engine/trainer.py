@@ -16,6 +16,10 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
     local_weight_target = criterion.get('local_weight', 0.1)
     local_warmup_steps = criterion.get('local_warmup_steps', 0)
 
+    # Mid-fusion local loss (per-module weights)
+    mid_fusion_loss_weights = criterion.get('mid_fusion_loss_weights', None)
+    mid_fusion_warmup_steps = criterion.get('mid_fusion_warmup_steps', 0)
+
     # Patch-IB specific losses and weights
     consistency_criterion = criterion.get('consistency', None)
     consistency_weight = criterion.get('consistency_weight', 1.0)
@@ -111,33 +115,53 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
             loss_local = None
             loss_local_raw = None
             local_weight = 0.0
-            if local_criterion is not None and local_features is not None:
-                # Unpack local features (supports both old 3-tuple and new 5-tuple format)
-                if len(local_features) == 5:
-                    patch_feat, token_feat, attn_mask, aligned_feat, attn_weights = local_features
-                    loss_local_raw = local_criterion(
-                        patch_feat, token_feat, attn_mask,
-                        aligned_features=aligned_feat, attn_weights=attn_weights
-                    )
-                else:
-                    # Legacy 3-tuple format (backward compatible)
-                    patch_feat, token_feat, attn_mask = local_features
-                    loss_local_raw = local_criterion(patch_feat, token_feat, attn_mask)
+            mid_fusion_losses_raw = None  # Per-module losses for logging
 
-                if use_uncertainty and hasattr(model, 'log_var_local'):
-                    # Uncertainty weighting for local loss (clamped to prevent extreme weights)
-                    log_var_loc = torch.clamp(model.log_var_local, min=-2, max=2)
-                    loss_local = loss_local_raw * torch.exp(-log_var_loc) + log_var_loc
-                    loss = loss + loss_local
-                else:
-                    # Fixed weight with warmup (original behavior)
-                    if local_warmup_steps > 0:
-                        warmup_factor = min(1.0, global_step / local_warmup_steps)
+            if local_criterion is not None and local_features is not None:
+                # Check format: list = mid-fusion per-module, tuple = standard
+                if isinstance(local_features, list):
+                    # ---- Mid-fusion local loss: one loss per module ----
+                    mid_fusion_losses_raw = []
+                    loss_local_raw = torch.tensor(0.0, device=device)
+                    weights = mid_fusion_loss_weights or [1.0] * len(local_features)
+
+                    # Warmup factor for mid-fusion local loss
+                    if mid_fusion_warmup_steps > 0:
+                        mf_warmup = min(1.0, global_step / mid_fusion_warmup_steps)
                     else:
-                        warmup_factor = 1.0
-                    local_weight = local_weight_target * warmup_factor
+                        mf_warmup = 1.0
+
+                    for k, (pf, tf, am) in enumerate(local_features):
+                        l_k = local_criterion(pf, tf, am)
+                        mid_fusion_losses_raw.append(l_k.item())
+                        loss_local_raw = loss_local_raw + weights[k] * l_k
+
                     loss_local = loss_local_raw
-                    loss = loss + local_weight * loss_local
+                    loss = loss + mf_warmup * loss_local
+                else:
+                    # ---- Standard local alignment loss ----
+                    if len(local_features) == 5:
+                        patch_feat, token_feat, attn_mask, aligned_feat, attn_weights = local_features
+                        loss_local_raw = local_criterion(
+                            patch_feat, token_feat, attn_mask,
+                            aligned_features=aligned_feat, attn_weights=attn_weights
+                        )
+                    else:
+                        patch_feat, token_feat, attn_mask = local_features
+                        loss_local_raw = local_criterion(patch_feat, token_feat, attn_mask)
+
+                    if use_uncertainty and hasattr(model, 'log_var_local'):
+                        log_var_loc = torch.clamp(model.log_var_local, min=-2, max=2)
+                        loss_local = loss_local_raw * torch.exp(-log_var_loc) + log_var_loc
+                        loss = loss + loss_local
+                    else:
+                        if local_warmup_steps > 0:
+                            warmup_factor = min(1.0, global_step / local_warmup_steps)
+                        else:
+                            warmup_factor = 1.0
+                        local_weight = local_weight_target * warmup_factor
+                        loss_local = loss_local_raw
+                        loss = loss + local_weight * loss_local
 
             # Scale loss by accumulation steps for gradient averaging
             loss = loss / accumulation_steps
@@ -262,7 +286,12 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
 
             if loss_local_raw is not None:
                 # Raw local loss (before any weighting)
-                log_dict["train/local_alignment_loss_raw"] = loss_local_raw.item()
+                log_dict["train/local_alignment_loss_raw"] = loss_local_raw.item() if torch.is_tensor(loss_local_raw) else loss_local_raw
+
+                # Per-module mid-fusion losses
+                if mid_fusion_losses_raw is not None:
+                    for k, l_k in enumerate(mid_fusion_losses_raw):
+                        log_dict[f"train/mid_fusion_local_loss_layer_{k}"] = l_k
 
                 if use_uncertainty and hasattr(model, 'log_var_local'):
                     # Uncertainty-weighted local loss

@@ -113,6 +113,16 @@ def _get_frozen_backbone_groups(model, base_lr, weight_decay):
             'name': 'mid_fusion_modules'
         })
 
+    # Mid-fusion local loss projections (if present)
+    if hasattr(model, 'mid_fusion_patch_projs'):
+        trainable_params.append({
+            'params': list(model.mid_fusion_patch_projs.parameters()) +
+                      list(model.mid_fusion_token_projs.parameters()),
+            'lr': base_lr,
+            'weight_decay': weight_decay,
+            'name': 'mid_fusion_projections'
+        })
+
     return trainable_params
 
 

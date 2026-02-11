@@ -110,6 +110,19 @@ class ModelABaseline(nn.Module):
                 for _ in fusion_layers
             ])
 
+            # Per-module projection layers for mid-fusion local loss (768 -> 512)
+            # Separate projections per fusion point since representations at
+            # different depths live in different subspaces
+            mid_fusion_loss_weights = cfg['model'].get('mid_fusion_loss_weights', None)
+            self.use_mid_fusion_local_loss = mid_fusion_loss_weights is not None
+            if self.use_mid_fusion_local_loss:
+                self.mid_fusion_patch_projs = nn.ModuleList([
+                    nn.Linear(self.embed_dim, self.proj_dim) for _ in fusion_layers
+                ])
+                self.mid_fusion_token_projs = nn.ModuleList([
+                    nn.Linear(self.embed_dim, self.proj_dim) for _ in fusion_layers
+                ])
+
         # Projectors (if needed, though BiomedCLIP has them built-in)
         # We might need a projector after masking if we change the flow
         self.logit_scale = self.backbone.clip_model.logit_scale
@@ -172,6 +185,7 @@ class ModelABaseline(nn.Module):
         vit_blocks = vit_trunk.blocks
         bert_layers = text_encoder.transformer.encoder.layer
         fusion_idx = 0
+        mid_fusion_intermediates = []
 
         for layer_idx in range(12):
             x_vit = vit_blocks[layer_idx](x_vit)
@@ -181,12 +195,17 @@ class ModelABaseline(nn.Module):
                 x_vit, x_bert = self.mid_fusion_modules[fusion_idx](
                     x_vit, x_bert, bert_padding_mask
                 )
+                # Collect intermediate states for local loss
+                if self.use_mid_fusion_local_loss:
+                    mid_fusion_intermediates.append(
+                        (x_vit[:, 1:, :], x_bert)  # patches (no CLS), tokens
+                    )
                 fusion_idx += 1
 
         # --- ViT final norm ---
         x_vit = vit_trunk.norm(x_vit)
 
-        return x_vit, x_bert, attention_mask
+        return x_vit, x_bert, attention_mask, mid_fusion_intermediates
 
     def _pool_and_project_text(self, hidden_states):
         """
@@ -211,7 +230,8 @@ class ModelABaseline(nn.Module):
         if self.use_mid_fusion:
             # ============ MID-FUSION PATH (Model E) ============
             # Layer-by-layer lockstep with cross-attention injection
-            vit_features, bert_hidden, attention_mask = self._forward_mid_fusion(images, text)
+            vit_features, bert_hidden, attention_mask, mid_intermediates = \
+                self._forward_mid_fusion(images, text)
 
             # Image: CLS token -> project -> normalize
             cls_token = vit_features[:, 0, :]       # (B, 768)
@@ -223,14 +243,20 @@ class ModelABaseline(nn.Module):
             text_embedding = self._pool_and_project_text(bert_hidden)
             text_embedding = F.normalize(text_embedding, p=2, dim=-1)
 
-            # Local alignment (reuse stored hidden states)
-            if self.use_local_alignment:
-                patch_features = self.patch_proj(patch_tokens)       # (B, 196, 512)
-                token_features = self.token_proj(bert_hidden)        # (B, L, 512)
+            # Mid-fusion local loss: project intermediate features at each fusion point
+            if self.use_mid_fusion_local_loss and mid_intermediates:
+                local_features = []
+                for k, (patches_768, tokens_768) in enumerate(mid_intermediates):
+                    pf = F.normalize(self.mid_fusion_patch_projs[k](patches_768), dim=-1)
+                    tf = F.normalize(self.mid_fusion_token_projs[k](tokens_768), dim=-1)
+                    local_features.append((pf, tf, attention_mask))
 
+            # External LocalAlignModule (if also enabled alongside mid-fusion)
+            elif self.use_local_alignment:
+                patch_features = self.patch_proj(patch_tokens)
+                token_features = self.token_proj(bert_hidden)
                 patch_features = F.normalize(patch_features, dim=-1)
                 token_features = F.normalize(token_features, dim=-1)
-
                 aligned_features, attn_weights = self.local_align(
                     token_features, patch_features
                 )

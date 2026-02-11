@@ -148,6 +148,19 @@ def main():
             criterions['local_weight'] = cfg['model'].get('local_alignment_weight', 0.1)
             criterions['local_warmup_steps'] = cfg['model'].get('local_alignment_warmup_steps', 0)
 
+        # Mid-fusion local loss (per-module weights)
+        mid_fusion_loss_weights = cfg['model'].get('mid_fusion_loss_weights', None)
+        if cfg['model'].get('use_mid_fusion', False) and mid_fusion_loss_weights is not None:
+            # Reuse LocalAlignmentLoss with cosine+symmetric for mid-fusion
+            if 'local_alignment' not in criterions:
+                criterions['local_alignment'] = LocalAlignmentLoss(
+                    temperature=cfg['model'].get('local_alignment_temperature', 1.0),
+                    loss_type=cfg['model'].get('mid_fusion_loss_type', 'cosine'),
+                    symmetric=cfg['model'].get('mid_fusion_loss_symmetric', True)
+                )
+            criterions['mid_fusion_loss_weights'] = mid_fusion_loss_weights
+            criterions['mid_fusion_warmup_steps'] = cfg['model'].get('mid_fusion_loss_warmup_steps', 0)
+
         # Add Patch-IB losses if masking is enabled
         if cfg['model'].get('use_masking', False):
             criterions['consistency'] = ConsistencyLoss(
