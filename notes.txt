@@ -1,0 +1,14 @@
+# Single metric from one run                                                                                                                                     
+  python plot_metric.py user/project/run_id -m loss_balance/local_contribution_pct                                                                                 
+                                                                                                                                                                   
+  # Compare same metric across multiple runs                                                                                                                       
+  python plot_metric.py user/project/run1 user/project/run2 -m val/combined_metric                                                                                 
+
+  # Multiple metrics from one run
+  python plot_metric.py user/project/run_id -m train/step_loss val/loss
+
+  # With smoothing and epoch x-axis
+  python plot_metric.py user/project/run_id -m train/step_loss --smooth 20 -x epoch
+
+  # Custom title and output dir
+  python plot_metric.py user/project/run_id -m loss_balance/contrastive_contribution_pct --title "Contrastive Dominance" -o thesis_plots

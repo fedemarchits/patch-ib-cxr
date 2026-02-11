@@ -8,17 +8,22 @@ from torch.utils.data import DataLoader
 from torchvision import transforms
 
 class MedicalImageTextDataset(Dataset):
-    def __init__(self, jsonl_path, image_root, split="train", transform=None, tokenizer_name="hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224", return_labels=False):
+    def __init__(self, jsonl_path, image_root, split="train", transform=None, tokenizer_name="hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224", return_labels=False, text_sections="all"):
         """
         Args:
             jsonl_path: Path to mimicxr_parsed_ds.jsonl
             image_root: Path to the folder containing MIMIC-CXR images (e.g., /datasets/MIMIC-CXR/files/)
             split: 'train', 'validate', or 'test'
+            text_sections: Which report sections to use:
+                - "all": full report (default, backward compatible)
+                - "findings_impression": only FINDINGS + IMPRESSION sections
+                - "impression": only IMPRESSION section
         """
         self.image_root = image_root
         self.transform = transform
         self.tokenizer = open_clip.get_tokenizer(tokenizer_name)
         self.return_labels = return_labels
+        self.text_sections = text_sections
         self.data = []
 
         # Load JSONL and filter by split
@@ -40,6 +45,16 @@ class MedicalImageTextDataset(Dataset):
         # 1. Text Parsing
         raw_text = entry.get('query', '')
         caption = raw_text.replace('|', ' ')
+
+        # Extract specific report sections if configured
+        if self.text_sections == "findings_impression":
+            idx = caption.find('FINDINGS:')
+            if idx != -1:
+                caption = caption[idx:]
+        elif self.text_sections == "impression":
+            idx = caption.find('IMPRESSION:')
+            if idx != -1:
+                caption = caption[idx:]
         
         # 2. Get verified image path
         img_path = entry.get('image_path')
@@ -122,13 +137,14 @@ def create_dataloaders(config, batch_size=None, return_labels=False):
     num_workers = data_cfg.get('num_workers', 4)
     img_size = data_cfg.get('image_size', 224)
     tokenizer = model_cfg.get('tokenizer_name', "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224")
+    text_sections = data_cfg.get('text_sections', 'all')
 
     # 2. Instantiate Datasets
     jsonl_path = data_cfg.get('jsonl_path') or data_cfg.get('json_path')
     if not jsonl_path:
         raise ValueError("Config must contain 'jsonl_path' or 'json_path'.")
 
-    print(f"[Data] Creating Datasets from {jsonl_path}")
+    print(f"[Data] Creating Datasets from {jsonl_path} (text_sections={text_sections})")
 
     train_ds = MedicalImageTextDataset(
         jsonl_path=jsonl_path,
@@ -136,7 +152,8 @@ def create_dataloaders(config, batch_size=None, return_labels=False):
         split="train",
         transform=get_transforms(True, img_size),
         tokenizer_name=tokenizer,
-        return_labels=return_labels
+        return_labels=return_labels,
+        text_sections=text_sections
     )
 
     val_ds = MedicalImageTextDataset(
@@ -145,7 +162,8 @@ def create_dataloaders(config, batch_size=None, return_labels=False):
         split="validate",
         transform=get_transforms(False, img_size),
         tokenizer_name=tokenizer,
-        return_labels=return_labels
+        return_labels=return_labels,
+        text_sections=text_sections
     )
 
     test_ds = MedicalImageTextDataset(
@@ -154,7 +172,8 @@ def create_dataloaders(config, batch_size=None, return_labels=False):
         split="test",
         transform=get_transforms(False, img_size),
         tokenizer_name=tokenizer,
-        return_labels=return_labels
+        return_labels=return_labels,
+        text_sections=text_sections
     )
 
     # 3. Create Loaders

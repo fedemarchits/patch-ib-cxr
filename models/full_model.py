@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from .backbone import BiomedCLIPBackbone
 from .heads import PatchMaskingHead, MaskHeadTopK
+from .cross_attention import BidirectionalCrossAttention
 
 
 class LocalAlignModule(nn.Module):
@@ -93,6 +94,22 @@ class ModelABaseline(nn.Module):
                 dropout=cfg['model'].get('local_alignment_dropout', 0.1)
             )
 
+        # Mid-Fusion Cross-Attention
+        self.use_mid_fusion = cfg['model'].get('use_mid_fusion', False)
+        if self.use_mid_fusion:
+            fusion_layers = cfg['model'].get('mid_fusion_layers', [4, 8, 12])
+            fusion_n_heads = cfg['model'].get('mid_fusion_n_heads', 12)
+            # Convert 1-indexed layer numbers to 0-indexed
+            self.mid_fusion_layer_indices = [l - 1 for l in fusion_layers]
+            self.mid_fusion_modules = nn.ModuleList([
+                BidirectionalCrossAttention(
+                    d_model=self.embed_dim,
+                    n_heads=fusion_n_heads,
+                    dropout=cfg['model'].get('mid_fusion_dropout', 0.1),
+                )
+                for _ in fusion_layers
+            ])
+
         # Projectors (if needed, though BiomedCLIP has them built-in)
         # We might need a projector after masking if we change the flow
         self.logit_scale = self.backbone.clip_model.logit_scale
@@ -123,89 +140,160 @@ class ModelABaseline(nn.Module):
             print(f"Available attributes: {dir(visual_model)}")
             raise AttributeError("Cannot project 768->512. Check logs.")
 
+    def _forward_mid_fusion(self, images, text):
+        """
+        Layer-by-layer lockstep forward pass with bidirectional cross-attention
+        injected at specified layers. Returns ViT features (with norm applied)
+        and BERT hidden states (raw, before pooling).
+        """
+        visual = self.backbone.clip_model.visual
+        text_encoder = self.backbone.clip_model.text
+
+        # --- ViT embedding ---
+        vit_trunk = visual.trunk
+        x_vit = vit_trunk.patch_embed(images)
+        x_vit = vit_trunk._pos_embed(x_vit)
+        x_vit = vit_trunk.patch_drop(x_vit)
+        x_vit = vit_trunk.norm_pre(x_vit)
+
+        # --- BERT embedding ---
+        attention_mask = (text != 0).long()
+        x_bert = text_encoder.transformer.embeddings(input_ids=text)
+
+        # Extended attention mask for BERT layers: (B, 1, 1, L)
+        # 0.0 for real tokens, large negative for padding
+        extended_mask = attention_mask[:, None, None, :].to(dtype=x_bert.dtype)
+        extended_mask = (1.0 - extended_mask) * torch.finfo(x_bert.dtype).min
+
+        # Padding mask for cross-attention: True = padding (ignored)
+        bert_padding_mask = (attention_mask == 0)
+
+        # --- Lockstep layer execution ---
+        vit_blocks = vit_trunk.blocks
+        bert_layers = text_encoder.transformer.encoder.layer
+        fusion_idx = 0
+
+        for layer_idx in range(12):
+            x_vit = vit_blocks[layer_idx](x_vit)
+            x_bert = bert_layers[layer_idx](x_bert, attention_mask=extended_mask)[0]
+
+            if layer_idx in self.mid_fusion_layer_indices:
+                x_vit, x_bert = self.mid_fusion_modules[fusion_idx](
+                    x_vit, x_bert, bert_padding_mask
+                )
+                fusion_idx += 1
+
+        # --- ViT final norm ---
+        x_vit = vit_trunk.norm(x_vit)
+
+        return x_vit, x_bert, attention_mask
+
+    def _pool_and_project_text(self, hidden_states):
+        """
+        Pool BERT hidden states (CLS token) and project to 512-d,
+        replicating the monolithic encode_text path.
+        BiomedCLIP uses ClsLastHiddenStatePooler (just CLS extraction)
+        followed by an MLP projection (768 -> 640 -> 512).
+        """
+        text_encoder = self.backbone.clip_model.text
+        # CLS token pooling (position 0)
+        pooled = hidden_states[:, 0, :]
+        # text.proj: Sequential(Linear 768->640, GELU, Linear 640->512)
+        projected = text_encoder.proj(pooled)
+        return projected
+
     def forward(self, images, text):
-        # 1. Get Raw Features (Batch, 197, 768)
-        features = self.backbone.encode_image_patches(images)
-
         importance_logits = None
-        local_features = None  # Will hold (patch_feat, token_feat, attn_mask) if enabled
-        img_emb_full = None    # Full embedding (for Patch-IB consistency loss)
-        topk_indices = None    # For Model D: indices of selected patches
+        local_features = None
+        img_emb_full = None
+        topk_indices = None
 
-        # Extract CLS and patches
-        cls_token = features[:, 0, :]      # (B, 768)
-        patch_tokens = features[:, 1:, :]  # (B, 196, 768)
+        if self.use_mid_fusion:
+            # ============ MID-FUSION PATH (Model E) ============
+            # Layer-by-layer lockstep with cross-attention injection
+            vit_features, bert_hidden, attention_mask = self._forward_mid_fusion(images, text)
 
-        if self.use_masking:
-            # ============ PATCH-IB: Dual-Path Forward ============
-            # Path 1: Full embedding (no masking) - for L_NCE_full and consistency
-            img_emb_full = self._project_embedding(cls_token)
-            img_emb_full = F.normalize(img_emb_full, p=2, dim=-1)
-
-            # Path 2: Masked embedding - for L_NCE_mask
-            # 2a. Generate Mask (The "Bottleneck")
-            if self.use_topk_masking:
-                # Model D: Top-K selection returns (mask, logits, topk_indices)
-                mask, importance_logits, topk_indices = self.mask_head(patch_tokens)
-            else:
-                # Model C: Threshold-based returns (mask, logits)
-                mask, importance_logits = self.mask_head(patch_tokens)
-
-            # 2b. Apply Mask
-            masked_patches = patch_tokens * mask.unsqueeze(-1)
-
-            # 2c. Global Pooling of Masked Patches
-            mask_sum = mask.sum(dim=1, keepdim=True) + 1e-6
-            img_embedding_768 = masked_patches.sum(dim=1) / mask_sum
-
-            # 2d. Project masked embedding
-            img_embedding = self._project_embedding(img_embedding_768)
-            img_embedding = F.normalize(img_embedding, p=2, dim=-1)
-            # =====================================================
-        else:
-            # Model A/B: Take CLS token -> Shape: (Batch, 768)
+            # Image: CLS token -> project -> normalize
+            cls_token = vit_features[:, 0, :]       # (B, 768)
+            patch_tokens = vit_features[:, 1:, :]    # (B, 196, 768)
             img_embedding = self._project_embedding(cls_token)
             img_embedding = F.normalize(img_embedding, p=2, dim=-1)
 
-        # Encode Text (pooled embedding for global loss)
-        text_embedding = self.backbone.encode_text(text)
-        text_embedding = F.normalize(text_embedding, p=2, dim=-1)
+            # Text: pool + project -> normalize
+            text_embedding = self._pool_and_project_text(bert_hidden)
+            text_embedding = F.normalize(text_embedding, p=2, dim=-1)
 
-        # Local alignment features (if enabled)
-        if self.use_local_alignment:
-            # Get token-level embeddings
-            token_embeddings, attention_mask = self.backbone.encode_text_tokens(text)
+            # Local alignment (reuse stored hidden states)
+            if self.use_local_alignment:
+                patch_features = self.patch_proj(patch_tokens)       # (B, 196, 512)
+                token_features = self.token_proj(bert_hidden)        # (B, L, 512)
 
-            # For Model D with Top-K: use only selected patches for efficiency
-            if self.use_topk_masking and topk_indices is not None:
-                # Get only the Top-K selected patches (B, K, 768)
-                selected_patches = self.mask_head.get_selected_patches(patch_tokens, topk_indices)
-                # Project selected patches to shared space (768 -> 512)
-                patch_features = self.patch_proj(selected_patches)  # (B, K, 512)
+                patch_features = F.normalize(patch_features, dim=-1)
+                token_features = F.normalize(token_features, dim=-1)
+
+                aligned_features, attn_weights = self.local_align(
+                    token_features, patch_features
+                )
+                local_features = (patch_features, token_features, attention_mask,
+                                  aligned_features, attn_weights)
+            # ===================================================
+        else:
+            # ============ STANDARD PATH (Models A/B/C/D) ============
+            # 1. Get Raw Features (Batch, 197, 768)
+            features = self.backbone.encode_image_patches(images)
+
+            # Extract CLS and patches
+            cls_token = features[:, 0, :]      # (B, 768)
+            patch_tokens = features[:, 1:, :]  # (B, 196, 768)
+
+            if self.use_masking:
+                # ============ PATCH-IB: Dual-Path Forward ============
+                # Path 1: Full embedding (no masking) - for L_NCE_full and consistency
+                img_emb_full = self._project_embedding(cls_token)
+                img_emb_full = F.normalize(img_emb_full, p=2, dim=-1)
+
+                # Path 2: Masked embedding - for L_NCE_mask
+                if self.use_topk_masking:
+                    mask, importance_logits, topk_indices = self.mask_head(patch_tokens)
+                else:
+                    mask, importance_logits = self.mask_head(patch_tokens)
+
+                masked_patches = patch_tokens * mask.unsqueeze(-1)
+                mask_sum = mask.sum(dim=1, keepdim=True) + 1e-6
+                img_embedding_768 = masked_patches.sum(dim=1) / mask_sum
+
+                img_embedding = self._project_embedding(img_embedding_768)
+                img_embedding = F.normalize(img_embedding, p=2, dim=-1)
+                # =====================================================
             else:
-                # Model C or no masking: use all patches
-                patch_features = self.patch_proj(patch_tokens)  # (B, 196, 512)
+                # Model A/B: Take CLS token -> Shape: (Batch, 768)
+                img_embedding = self._project_embedding(cls_token)
+                img_embedding = F.normalize(img_embedding, p=2, dim=-1)
 
-            token_features = self.token_proj(token_embeddings)  # (B, L, 512)
+            # Encode Text (pooled embedding for global loss)
+            text_embedding = self.backbone.encode_text(text)
+            text_embedding = F.normalize(text_embedding, p=2, dim=-1)
 
-            # Normalize for stable attention computation
-            patch_features = F.normalize(patch_features, dim=-1)
-            token_features = F.normalize(token_features, dim=-1)
+            # Local alignment features (if enabled)
+            if self.use_local_alignment:
+                token_embeddings, attention_mask = self.backbone.encode_text_tokens(text)
 
-            # Multi-head cross-attention: align patches to tokens
-            # Query=tokens, Key/Value=patches (Top-K patches for Model D)
-            aligned_features, attn_weights = self.local_align(
-                token_features, patch_features
-            )
+                if self.use_topk_masking and topk_indices is not None:
+                    selected_patches = self.mask_head.get_selected_patches(patch_tokens, topk_indices)
+                    patch_features = self.patch_proj(selected_patches)
+                else:
+                    patch_features = self.patch_proj(patch_tokens)
 
-            # local_features now includes aligned features for loss computation
-            # Format: (patch_feat, token_feat, attention_mask, aligned_feat, attn_weights)
-            local_features = (patch_features, token_features, attention_mask, aligned_features, attn_weights)
+                token_features = self.token_proj(token_embeddings)
 
-        # Return format:
-        # - img_embedding: masked if use_masking else full (main embedding for retrieval)
-        # - text_embedding: text embedding
-        # - importance_logits: mask logits (for sparsity loss)
-        # - local_features: (patch_feat, token_feat, attn_mask) or None
-        # - img_emb_full: full embedding if use_masking else None (for consistency loss)
+                patch_features = F.normalize(patch_features, dim=-1)
+                token_features = F.normalize(token_features, dim=-1)
+
+                aligned_features, attn_weights = self.local_align(
+                    token_features, patch_features
+                )
+                local_features = (patch_features, token_features, attention_mask,
+                                  aligned_features, attn_weights)
+            # =======================================================
+
         return img_embedding, text_embedding, importance_logits, local_features, img_emb_full

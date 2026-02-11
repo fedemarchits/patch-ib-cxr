@@ -104,6 +104,15 @@ def _get_frozen_backbone_groups(model, base_lr, weight_decay):
             'name': 'local_align'
         })
 
+    # Mid-fusion cross-attention modules (if present)
+    if hasattr(model, 'mid_fusion_modules'):
+        trainable_params.append({
+            'params': list(model.mid_fusion_modules.parameters()),
+            'lr': base_lr,
+            'weight_decay': weight_decay,
+            'name': 'mid_fusion_modules'
+        })
+
     return trainable_params
 
 

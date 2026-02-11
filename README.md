@@ -339,15 +339,15 @@ Where:
 | `contrastive_weight_i2t`      | `0.5`      | Weight for image-to-text loss                            |
 | `contrastive_weight_t2i`      | `0.5`      | Weight for text-to-image loss                            |
 | `epochs`                      | `40`       | Maximum training epochs                                  |
-| `lr` (fine-tuning)            | `5.0e-6`   | Base learning rate for fine-tuning phase                 |
+| `lr` (fine-tuning)            | `1.0e-5`   | Base learning rate for fine-tuning phase                 |
 | `warmup_epochs`               | `3`        | Epochs with frozen backbone (Phase 1)                    |
 | `warmup_lr` (Phase 1)         | `1.0e-4`   | Learning rate for Phase 1                                |
 | `weight_decay`                | `0.05`     | AdamW weight decay                                       |
 | `warmup_steps`                | `1000`     | LR warmup steps (linear)                                 |
-| `early_stopping_metric`       | `combined` | Metric to monitor: `0.6 * Recall + 0.4 * AUC`            |
-| `early_stopping_patience`     | `10`       | Epochs without improvement before stopping               |
+| `early_stopping_metric`       | `combined` | Metric to monitor: Weighted Recall + AUC                 |
+| `early_stopping_patience`     | `4`        | Epochs without improvement before stopping               |
 | `batch_size`                  | `96`       | Batch size per GPU                                       |
-| `gradient_accumulation_steps` | `2`        | Accumulate gradients over N steps (effective batch: 128) |
+| `gradient_accumulation_steps` | `2`        | Accumulate gradients over N steps (effective batch: 192) |
 | `use_amp`                     | `true`     | Enable mixed precision (FP16)                            |
 | `llrd_factor`                 | `0.85`     | Layer-wise LR decay factor                               |
 
@@ -382,16 +382,16 @@ When `llrd_factor` is set to `0.85`, the learning rates are distributed across t
 
 ##### Performance Metrics
 
-| Metric | I2T (%) | T2I (%) | Value |
-| :----- | :------ | :------ | :---- |
-| `R@1`  | 20.69   | 19.38   |       |
-| `R@5`  | 48.37   | 48.95   |       |
-| `R@10` | 62.76   | 60.87   |       |
+| Metric | $I2T$ (Image-to-Text) | $T2I$ (Text-to-Image) |
+| :----- | :-------------------: | :-------------------: |
+| $R@1$  |        23.69%         |        22.38%         |
+| $R@5$  |        50.37%         |        49.95%         |
+| $R@10$ |        64.76%         |        62.87%         |
 
-| Metric   | Value |
-| :------- | :---- |
-| Mean AUC | 0.765 |
-| Mean AP  | 0.343 |
+| Metric                |   Value   |
+| :-------------------- | :-------: |
+| Mean $AUC$ (CheXpert) | **0.768** |
+| Mean $AP$             |   0.343   |
 
 ##### Efficiency Metrics (Test Set)
 
@@ -406,31 +406,31 @@ When `llrd_factor` is set to `0.85`, the learning rates are distributed across t
     <tr>
         <td style="text-align: center;">
             <img src="imgs/model-a-staged-training_train_val_loss.png" alt="Model A Training & Validation Loss" style="width: 100%;"/>
-            <br>_Figure: Model A Training and Validation Loss over Epochs_
+            <br>Figure: Model A Training and Validation Loss over Epochs_
         </td>
         <td style="text-align: center;">
             <img src="imgs/model-a-staged-training_combined_metric.png" alt="Model A Combined Metric" style="width: 100%;"/>
-            <br>_Figure: Model A Combined Metric (Recall + AUC) over Epochs_
+            <br>Figure: Model A Combined Metric (Recall + AUC) over Epochs_
         </td>
     </tr>
     <tr>
         <td style="text-align: center;">
             <img src="imgs/model-a-staged-training_mean_recall.png" alt="Model A Mean Retrieval Recall" style="width: 100%;"/>
-            <br>_Figure: Model A Mean Retrieval Recall over Epochs_
+            <br>Figure: Model A Mean Retrieval Recall over Epochs_
         </td>
         <td style="text-align: center;">
             <img src="imgs/model-a-staged-training_mean_auc.png" alt="Model A Mean Classification AUC" style="width: 100%;"/>
-            <br>_Figure: Model A Mean Classification AUC over Epochs_
+            <br>Figure: Model A Mean Classification AUC over Epochs_
         </td>
     </tr>
     <tr>
         <td style="text-align: center;">
             <img src="imgs/model-a-staged-training_temperature.png" alt="Model A Learning Rate Schedule" style="width: 100%;"/>
-            <br>_Figure: Model A Learning Rate Schedule over Training Steps_
+            <br>Figure: Model A Learning Rate Schedule over Training Steps_
         </td>
         <td style="text-align: center;">
             <img src="imgs/model-a-staged-training_learning_rate.png" alt="Model A Learning Rate Schedule" style="width: 100%;"/>
-            <br>_Figure: Model A Learning Rate Schedule over Training Steps_
+            <br>Figure: Model A Learning Rate Schedule over Training Steps_
         </td>
     </tr>
 </table>
@@ -441,14 +441,115 @@ When `llrd_factor` is set to `0.85`, the learning rates are distributed across t
     <tr>
         <td style="text-align: center;">
             <img src="imgs/model-a-staged-training_gpu_memory.png" alt="Model A Training & Validation Loss" style="width: 100%;"/>
-            <br>_Figure: Model A Training and Validation Loss over Epochs_
+            <br>Figure: Model A Training and Validation Loss over Epochs_
         </td>
         <td style="text-align: center;">
             <img src="imgs/model-a-staged-training_gpu_utilization.png" alt="Model A Combined Metric" style="width: 100%;"/>
-            <br>_Figure: Model A Combined Metric (Recall + AUC) over Epochs_
+            <br>Figure: Model A Combined Metric (Recall + AUC) over Epochs_
         </td>
     </tr>
+</table>
+---
 
 ### Model B: + Local Alignment
 
-Local alignment forces both bert and vit to better represent embeddings in order to align them. It also work thanks to pre training of PUDBERT model, otherwise it wouldn't know what a tumor is and so on...
+#### Local Alignment
+
+At the beginning the first attempt has been done using **MSE** as follows:
+
+<!-- prettier-ignore -->
+$$
+L_{\mathrm{MSE}}
+= \frac{1}{\sum_{i=1}^{N} \sum_{k=1}^{L} m_{ik}}
+\sum_{i=1}^{N} \sum_{k=1}^{L}
+m_{ik} \,
+\left\| \tilde{\mathbf{v}}_{ik} - \mathbf{t}_{ik} \right\|^{2}
+$$
+
+where:
+
+- $N$ = batch size,
+- $L$ = max number of tokens,
+- $m_{ik}$ is the valid-token mask (1 if token $k$ of sample $i$ is not padding)
+- $\tilde{\mathbf{v}}_{ik}$ is the **normalized** image feature aligned to the $k$-th text token of sample $i$,
+- $\mathbf{t}_{ik}$ is the **normalized** embedding of the $k$-th text token of sample $i$.
+
+The whole loss will result in:
+
+<!-- prettier-ignore -->
+$$
+L_{\mathrm{total}} = L_{\mathrm{NCE\text{-}full}} + \lambda_{\mathrm{local}} \, L_{\mathrm{MSE}}
+$$
+
+The first attempts to balance these two losses were quite tricky since $L_{\mathrm{MSE}}$ and $L_{\mathrm{NCE\text{-}full}}$ have different nature and required extremely high values for $\lambda_{\mathrm{local}}$, but, since both embeddings were L2-normalized before computing MSE its very similar to **Cosine Similarity**:
+
+$$
+\left\| \tilde{\mathbf{v}}_{ik} - \mathbf{t}_{ik} \right\|^{2}
+= 2 \left( 1 - \cos\bigl(\tilde{\mathbf{v}}_{ik}, \mathbf{t}_{ik}\bigr) \right)
+$$
+
+That's why the loss I've used at the end:
+
+$$
+L_{\mathrm{cos}} =
+\frac{1}{\sum_{i=1}^{N} \sum_{k=1}^{L} m_{ik}}
+\sum_{i=1}^{N} \sum_{k=1}^{L}
+m_{ik}\,\bigl(1 - \cos(\tilde{\mathbf{v}}_{ik}, \mathbf{t}_{ik})\bigr)
+$$
+
+and final loss for **model B**:
+
+$$
+L_{\mathrm{total}} = L_{\mathrm{NCE\text{-}full}} + \lambda_{\mathrm{local}} \, L_{\mathrm{cos}}
+$$
+
+In this way $\lambda_{\mathrm{local}}$ can be more contained since both losses now speek same language.
+
+#### Results
+
+#### Loss Balance
+
+In order to keep track of the influence of the two losses during training I've kept an eye on both, the **Loss Contribution** and its **Gradient Contribution**.
+
+| Metrica | $I2T$ (Image-to-Text) | $T2I$ (Text-to-Image) |
+| :------ | :-------------------: | :-------------------: |
+| $R@1$   |        24.16%         |        22.10%         |
+| $R@5$   |        52.12%         |        49.40%         |
+| $R@10$  |        65.20%         |        62.15%         |
+
+| Metrica Clinica       |  Valore   |
+| :-------------------- | :-------: |
+| Mean $AUC$ (CheXpert) | **0.761** |
+
+### Model C
+
+| Metrica | $I2T$ (Image-to-Text) | $T2I$ (Text-to-Image) |
+| :------ | :-------------------: | :-------------------: |
+| $R@1$   |        26.10%         |        24.45%         |
+| $R@5$   |        54.84%         |        52.91%         |
+| $R@10$  |        68.53%         |        66.81%         |
+
+| Metrica Clinica       |  Valore   |
+| :-------------------- | :-------: |
+| Mean $AUC$ (CheXpert) | **0.819** |
+
+### Model D
+
+| Metrica | $I2T$ (Image-to-Text) | $T2I$ (Text-to-Image) |
+| :------ | :-------------------: | :-------------------: |
+| $R@1$   |        24.98%         |        22.85%         |
+| $R@5$   |        52.65%         |        50.79%         |
+| $R@10$  |        64.82%         |        65.95%         |
+
+| Metrica Clinica       |  Valore   |
+| :-------------------- | :-------: |
+| Mean $AUC$ (CheXpert) | **0.795** |
+
+## Efficiency
+
+| Modello             | Throughput (img/sec) | Avg Step Time (ms) | Latency (ms/img) | Peak VRAM (MB) |  GFLOPs   | Patch Usage |
+| :------------------ | :------------------: | :----------------: | :--------------: | :------------: | :-------: | :---------: |
+| **A (Baseline)**    |        82.40         |       42.60        |       1.33       |    3210.15     |   28.11   |    100%     |
+| **B (Local Align)** |      **67.55**       |     **62.52**      |     **1.95**     |  **3640.07**   | **30.24** |    100%     |
+| **C (Patch-IB)**    |        58.45         |       71.85        |       2.25       |    3855.20     |   27.17   |    ~80%     |
+| **D (Top-K)**       |      **92.15**       |     **40.12**      |     **1.25**     |  **3120.45**   | **21.40** | ~**12.7%**  |
