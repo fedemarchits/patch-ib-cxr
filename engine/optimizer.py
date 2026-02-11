@@ -126,39 +126,56 @@ def _get_frozen_backbone_groups(model, base_lr, weight_decay):
     return trainable_params
 
 
+def _extract_layer_idx(name, key):
+    """Extract integer layer index from a parameter name after the given key.
+    E.g. _extract_layer_idx("...blocks.5.mlp...", "blocks") -> 5
+         _extract_layer_idx("...encoder.layer.3.attention...", "layer") -> 3
+    """
+    parts = name.split('.')
+    for j, part in enumerate(parts):
+        if part == key and j + 1 < len(parts):
+            try:
+                return int(parts[j + 1])
+            except ValueError:
+                pass
+    return None
+
+
 def _get_llrd_groups(model, base_lr, weight_decay, llrd_factor):
     """
     Layer-wise Learning Rate Decay for fine-tuning.
     Earlier layers get smaller learning rates.
+    Applied to both ViT (visual.trunk.blocks) and BERT (text.transformer.encoder.layer).
+    Both encoders have 12 layers and share the same LR schedule per depth.
     """
     param_groups = []
 
     # Get the visual encoder blocks
     visual_model = model.backbone.clip_model.visual
 
-    # Count number of transformer blocks
+    # Count number of transformer blocks (ViT)
     if hasattr(visual_model, 'blocks'):
         num_layers = len(visual_model.blocks)
     elif hasattr(visual_model, 'trunk') and hasattr(visual_model.trunk, 'blocks'):
         num_layers = len(visual_model.trunk.blocks)
     else:
-        # Fallback: no LLRD, use uniform LR
         print("Warning: Could not detect transformer blocks, using uniform LR")
         return [{'params': model.parameters(), 'lr': base_lr, 'weight_decay': weight_decay}]
 
-    # Build layer name -> LR mapping
+    # Build layer index -> LR mapping
     # Layer 0 (earliest) gets the smallest LR
     # Layer N-1 (latest) gets base_lr
     layer_lrs = {}
     for i in range(num_layers):
         layer_lrs[i] = base_lr * (llrd_factor ** (num_layers - 1 - i))
 
-    # Embeddings and early components get the smallest LR
+    # Embeddings (both ViT and BERT) get the smallest LR
     embedding_lr = base_lr * (llrd_factor ** num_layers)
 
     # Group parameters
     embedding_params = []
-    layer_params = {i: [] for i in range(num_layers)}
+    vit_layer_params = {i: [] for i in range(num_layers)}
+    bert_layer_params = {i: [] for i in range(num_layers)}
     head_params = []
     other_params = []
     no_decay_params = []
@@ -174,30 +191,37 @@ def _get_llrd_groups(model, base_lr, weight_decay, llrd_factor):
 
         # Classify parameter by layer
         if 'backbone' in name:
+            # ---- ViT embeddings ----
             if 'patch_embed' in name or 'cls_token' in name or 'pos_embed' in name:
                 embedding_params.append(param)
-            elif 'blocks' in name:
-                # Extract layer number from name like "backbone.clip_model.visual.blocks.5.mlp.fc1.weight"
-                layer_idx = None
-                parts = name.split('.')
-                for j, part in enumerate(parts):
-                    if part == 'blocks' and j + 1 < len(parts):
-                        try:
-                            layer_idx = int(parts[j + 1])
-                            break
-                        except ValueError:
-                            pass
 
-                if layer_idx is not None and layer_idx in layer_params:
-                    layer_params[layer_idx].append(param)
+            # ---- ViT transformer blocks ----
+            elif 'blocks' in name:
+                layer_idx = _extract_layer_idx(name, 'blocks')
+                if layer_idx is not None and layer_idx in vit_layer_params:
+                    vit_layer_params[layer_idx].append(param)
                 else:
                     other_params.append(param)
-            elif 'head' in name or 'proj' in name or 'norm' in name:
+
+            # ---- BERT embeddings ----
+            elif 'text' in name and 'embeddings' in name:
+                embedding_params.append(param)
+
+            # ---- BERT transformer layers ----
+            elif 'encoder.layer' in name:
+                layer_idx = _extract_layer_idx(name, 'layer')
+                if layer_idx is not None and layer_idx in bert_layer_params:
+                    bert_layer_params[layer_idx].append(param)
+                else:
+                    other_params.append(param)
+
+            # ---- Head / projection layers ----
+            elif 'head' in name or 'proj' in name:
                 head_params.append(param)
             else:
                 other_params.append(param)
         else:
-            # Non-backbone params (projections, etc.) get base_lr
+            # Non-backbone params (mid-fusion, local alignment, etc.) get base_lr
             head_params.append(param)
 
     # Create parameter groups
@@ -210,12 +234,21 @@ def _get_llrd_groups(model, base_lr, weight_decay, llrd_factor):
         })
 
     for i in range(num_layers):
-        if layer_params[i]:
+        # ViT layer i
+        if vit_layer_params[i]:
             param_groups.append({
-                'params': layer_params[i],
+                'params': vit_layer_params[i],
                 'lr': layer_lrs[i],
                 'weight_decay': weight_decay,
-                'name': f'layer_{i}'
+                'name': f'vit_layer_{i}'
+            })
+        # BERT layer i (same LR as ViT layer i)
+        if bert_layer_params[i]:
+            param_groups.append({
+                'params': bert_layer_params[i],
+                'lr': layer_lrs[i],
+                'weight_decay': weight_decay,
+                'name': f'bert_layer_{i}'
             })
 
     if head_params:
