@@ -10,7 +10,7 @@ data:
 model:
   vision_backbone: "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
   text_backbone: "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
-  temperature: 0.1
+
 
   # Contrastive loss weights
   contrastive_mask_weight: 1.0 # Weight for L_NCE-mask (on masked embedding)
@@ -33,7 +33,6 @@ model:
   # ============ LOCAL ALIGNMENT CONFIGURATION ============
   # Local alignment is essential for Patch-IB (grounding)
   use_local_alignment: true
-  local_alignment_temperature: 0.7
   use_uncertainty_weighting: false
   local_alignment_weight: 1000
   local_alignment_warmup_steps: 3333

@@ -131,10 +131,11 @@ class LocalAlignmentLoss(nn.Module):
             return loss_fwd
 
         # ---- Reverse direction: image → text ----
+        # Standard scaled dot-product attention (1/sqrt(D)), matching nn.MultiheadAttention
         scale = D ** 0.5
         rev_scores = torch.bmm(
             patch_features, token_features.transpose(1, 2)
-        ) / (scale * self.temperature)  # (B, M, L)
+        ) / scale  # (B, M, L)
 
         # Mask padding tokens so patches don't attend to them
         padding_mask = (~attention_mask.bool()).unsqueeze(1)  # (B, 1, L)
