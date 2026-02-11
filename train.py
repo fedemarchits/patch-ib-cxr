@@ -141,7 +141,9 @@ def main():
         # Add local alignment loss if enabled
         if cfg['model'].get('use_local_alignment', False):
             criterions['local_alignment'] = LocalAlignmentLoss(
-                temperature=cfg['model'].get('local_alignment_temperature', 1.0)
+                temperature=cfg['model'].get('local_alignment_temperature', 1.0),
+                loss_type=cfg['model'].get('local_alignment_loss_type', 'mse'),
+                symmetric=cfg['model'].get('local_alignment_symmetric', False)
             )
             criterions['local_weight'] = cfg['model'].get('local_alignment_weight', 0.1)
             criterions['local_warmup_steps'] = cfg['model'].get('local_alignment_warmup_steps', 0)

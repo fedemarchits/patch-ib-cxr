@@ -59,55 +59,93 @@ class LocalAlignmentLoss(nn.Module):
     1. Multi-head mode (default): Uses pre-computed aligned features from LocalAlignModule
     2. Legacy single-head mode: Computes attention internally (backward compatible)
 
-    Loss: MSE between aligned visual features and token embeddings.
+    Loss types:
+    - "mse": MSE between aligned visual features and token embeddings (default, backward compatible)
+    - "cosine": 1 - cosine_similarity, bounded in [0, 2], does not decay to zero
+
+    Symmetry:
+    - symmetric=False (default): text→image only (backward compatible)
+    - symmetric=True: averages text→image and image→text directions
     """
-    def __init__(self, temperature=1.0, use_multihead=True):
+    def __init__(self, temperature=1.0, use_multihead=True, loss_type="mse", symmetric=False):
         super().__init__()
         self.temperature = temperature
         self.use_multihead = use_multihead
+        assert loss_type in ("mse", "cosine"), f"Unknown loss_type: {loss_type}"
+        self.loss_type = loss_type
+        self.symmetric = symmetric
+
+    def _compute_loss(self, predicted, target, mask=None):
+        """Compute per-element loss using the configured loss type.
+
+        Args:
+            predicted: (B, N, D)
+            target: (B, N, D)
+            mask: (B, N) or None — 1 for valid, 0 for padding
+
+        Returns:
+            scalar loss averaged over valid elements
+        """
+        if self.loss_type == "cosine":
+            cos_sim = F.cosine_similarity(predicted, target, dim=-1)  # (B, N)
+            loss_per_elem = 1.0 - cos_sim
+        else:
+            loss_per_elem = F.mse_loss(predicted, target, reduction='none')  # (B, N, D)
+            loss_per_elem = loss_per_elem.mean(dim=-1)  # (B, N)
+
+        if mask is not None:
+            mask_f = mask.float()
+            return (loss_per_elem * mask_f).sum() / (mask_f.sum() + 1e-6)
+        else:
+            return loss_per_elem.mean()
 
     def forward(self, patch_features, token_features, attention_mask,
                 aligned_features=None, attn_weights=None):
         """
         Args:
-            patch_features: (B, 196, D) - projected image patch embeddings
+            patch_features: (B, M, D) - projected image patch embeddings (M=196 or fewer with masking)
             token_features: (B, L, D) - projected text token embeddings
             attention_mask: (B, L) - 1 for valid tokens, 0 for padding
             aligned_features: (B, L, D) - pre-computed aligned features (multi-head mode)
-            attn_weights: (B, L, 196) - attention weights (for logging/visualization)
+            attn_weights: (B, L, M) - attention weights (for logging/visualization)
 
         Returns:
-            loss: scalar - masked MSE loss
+            loss: scalar - local alignment loss
         """
         B, L, D = token_features.shape
 
+        # ---- Forward direction: text → image ----
         if aligned_features is not None:
-            # Multi-head mode: use pre-computed aligned features
             v_aligned = aligned_features
         else:
-            # Legacy single-head mode: compute attention internally
             scale = D ** 0.5
-            attention_scores = torch.bmm(
+            fwd_scores = torch.bmm(
                 token_features, patch_features.transpose(1, 2)
             ) / (scale * self.temperature)
+            fwd_weights = F.softmax(fwd_scores, dim=-1)
+            v_aligned = torch.bmm(fwd_weights, patch_features)
 
-            attention_weights = F.softmax(attention_scores, dim=-1)
-            v_aligned = torch.bmm(attention_weights, patch_features)
+        loss_fwd = self._compute_loss(v_aligned, token_features, mask=attention_mask)
 
-        # MSE loss with masking
-        # Only compute loss for non-padding tokens
-        mse_per_token = F.mse_loss(v_aligned, token_features, reduction='none')  # (B, L, D)
-        mse_per_token = mse_per_token.mean(dim=-1)  # (B, L) - average over embedding dim
+        if not self.symmetric:
+            return loss_fwd
 
-        # Apply mask
-        mask_expanded = attention_mask.float()  # (B, L)
-        masked_mse = mse_per_token * mask_expanded
+        # ---- Reverse direction: image → text ----
+        scale = D ** 0.5
+        rev_scores = torch.bmm(
+            patch_features, token_features.transpose(1, 2)
+        ) / (scale * self.temperature)  # (B, M, L)
 
-        # Average over valid tokens only
-        num_valid_tokens = mask_expanded.sum() + 1e-6
-        loss = masked_mse.sum() / num_valid_tokens
+        # Mask padding tokens so patches don't attend to them
+        padding_mask = (~attention_mask.bool()).unsqueeze(1)  # (B, 1, L)
+        rev_scores = rev_scores.masked_fill(padding_mask, float('-inf'))
 
-        return loss
+        rev_weights = F.softmax(rev_scores, dim=-1)  # (B, M, L)
+        t_aligned = torch.bmm(rev_weights, token_features)  # (B, M, D)
+
+        loss_rev = self._compute_loss(t_aligned, patch_features)
+
+        return 0.5 * loss_fwd + 0.5 * loss_rev
 
 
 class ConsistencyLoss(nn.Module):
