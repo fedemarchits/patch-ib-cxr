@@ -231,6 +231,9 @@ def validate(model, dataloader, criterions, device, use_amp, compute_retrieval=F
     local_criterion = criterions.get('local_alignment', None)
     local_weight = criterions.get('local_weight', 0.1)
 
+    # Mid-fusion local loss config
+    mid_fusion_loss_weights = criterions.get('mid_fusion_loss_weights', None)
+
     # Check if using uncertainty weighting
     use_uncertainty = hasattr(model, 'use_uncertainty_weighting') and model.use_uncertainty_weighting
 
@@ -256,23 +259,32 @@ def validate(model, dataloader, criterions, device, use_amp, compute_retrieval=F
 
             # Include local alignment loss if enabled
             if local_criterion is not None and local_features is not None:
-                # Unpack local features (supports both old 3-tuple and new 5-tuple format)
-                if len(local_features) == 5:
-                    patch_feat, token_feat, attn_mask, aligned_feat, attn_weights = local_features
-                    loss_local_raw = local_criterion(
-                        patch_feat, token_feat, attn_mask,
-                        aligned_features=aligned_feat, attn_weights=attn_weights
+                if isinstance(local_features, list):
+                    # Mid-fusion format: list of (patch_feat, token_feat, mask)
+                    weights = mid_fusion_loss_weights or [1.0] * len(local_features)
+                    loss_local_raw = sum(
+                        weights[k] * local_criterion(pf, tf, am)
+                        for k, (pf, tf, am) in enumerate(local_features)
                     )
+                    loss = loss + loss_local_raw
                 else:
-                    patch_feat, token_feat, attn_mask = local_features
-                    loss_local_raw = local_criterion(patch_feat, token_feat, attn_mask)
+                    # Standard format: single tuple
+                    if len(local_features) == 5:
+                        patch_feat, token_feat, attn_mask, aligned_feat, attn_weights = local_features
+                        loss_local_raw = local_criterion(
+                            patch_feat, token_feat, attn_mask,
+                            aligned_features=aligned_feat, attn_weights=attn_weights
+                        )
+                    else:
+                        patch_feat, token_feat, attn_mask = local_features
+                        loss_local_raw = local_criterion(patch_feat, token_feat, attn_mask)
 
-                if use_uncertainty and hasattr(model, 'log_var_local'):
-                    log_var_loc = torch.clamp(model.log_var_local, min=-2, max=2)
-                    loss_local = loss_local_raw * torch.exp(-log_var_loc) + log_var_loc
-                    loss = loss + loss_local
-                else:
-                    loss = loss + local_weight * loss_local_raw
+                    if use_uncertainty and hasattr(model, 'log_var_local'):
+                        log_var_loc = torch.clamp(model.log_var_local, min=-2, max=2)
+                        loss_local = loss_local_raw * torch.exp(-log_var_loc) + log_var_loc
+                        loss = loss + loss_local
+                    else:
+                        loss = loss + local_weight * loss_local_raw
 
         total_loss += loss.item()
         num_batches += 1
