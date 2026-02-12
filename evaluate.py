@@ -74,7 +74,6 @@ def create_efficiency_report(eff_metrics, output_dir):
 
 def create_results_report(ret_metrics, cls_metrics, output_dir):
     """Create a formatted results report text file."""
-    # Class names for MIMIC-CXR
     class_names = [
         "Atelectasis", "Cardiomegaly", "Consolidation", "Edema",
         "Enlarged Cardiomediastinum", "Fracture", "Lung Lesion", "Lung Opacity",
@@ -100,20 +99,22 @@ def create_results_report(ret_metrics, cls_metrics, output_dir):
         f"  R@5:   {ret_metrics.get('t2i_R@5', 0):.2f}%",
         f"  R@10:  {ret_metrics.get('t2i_R@10', 0):.2f}%",
         "",
-        "--- Classification Metrics (Linear Probe) ---",
+        "--- Clustering Metrics (K-Means, Cosine, Single-Label Test Samples) ---",
         "",
-        f"Mean AUC:  {cls_metrics.get('classification_mean_auc', 0):.4f}",
-        f"Mean AP:   {cls_metrics.get('classification_mean_ap', 0):.4f}",
+        f"NMI:      {cls_metrics.get('clustering_nmi', 0):.4f}",
+        f"ARI:      {cls_metrics.get('clustering_ari', 0):.4f}",
+        f"Purity:   {cls_metrics.get('clustering_purity', 0):.4f}",
+        f"Samples:  {cls_metrics.get('clustering_num_single_label_samples', 0)}",
+        f"Classes:  {cls_metrics.get('clustering_num_classes_present', 0)}",
         "",
-        "Per-Class AUC:",
+        "Per-Class Sample Distribution:",
     ]
 
+    class_dist = cls_metrics.get('clustering_class_distribution', {})
     for i, name in enumerate(class_names):
-        auc = cls_metrics.get(f'class_{i}_auc', None)
-        if auc is not None:
-            report_lines.append(f"  {name:30s}: {auc:.4f}")
-        else:
-            report_lines.append(f"  {name:30s}: N/A (no samples)")
+        count = class_dist.get(i, class_dist.get(str(i), 0))
+        if count > 0:
+            report_lines.append(f"  {name:30s}: {count} samples")
 
     report_lines.extend(["", "=" * 60])
 
@@ -195,10 +196,14 @@ if __name__ == "__main__":
     # B. Retrieval (Zero-Shot)
     ret_metrics = evaluator.compute_retrieval()
 
-    # C. Classification (Linear Probe)
-    cls_metrics = evaluator.evaluate_classification()
+    # C. Clustering Evaluation (K-Means, cosine)
+    cls_metrics = evaluator.evaluate_clustering()
 
-    # D. Attention Visualizations (optional)
+    # D. UMAP Visualization (always run, single-label test samples)
+    vis_dir = os.path.join(args.output_dir, "visualizations")
+    umap_path = evaluator.generate_umap_visualization(output_dir=vis_dir)
+
+    # E. Attention Visualizations (optional)
     if args.visualize:
         vis_dir = os.path.join(args.output_dir, "visualizations")
         use_amp = cfg.get('training', {}).get('use_amp', False)
@@ -291,10 +296,16 @@ if __name__ == "__main__":
             "eval/t2i_R@1": ret_metrics.get('t2i_R@1', 0),
             "eval/t2i_R@5": ret_metrics.get('t2i_R@5', 0),
             "eval/t2i_R@10": ret_metrics.get('t2i_R@10', 0),
-            # Classification
-            "eval/mean_auc": cls_metrics.get('classification_mean_auc', 0),
-            "eval/mean_ap": cls_metrics.get('classification_mean_ap', 0),
+            # Clustering
+            "eval/clustering_nmi": cls_metrics.get('clustering_nmi', 0),
+            "eval/clustering_ari": cls_metrics.get('clustering_ari', 0),
+            "eval/clustering_purity": cls_metrics.get('clustering_purity', 0),
+            "eval/clustering_num_samples": cls_metrics.get('clustering_num_single_label_samples', 0),
         })
+
+        # Log UMAP image if generated
+        if umap_path and os.path.exists(umap_path):
+            wandb.log({"eval/umap_embeddings": wandb.Image(umap_path)})
 
         # Upload files as artifacts
         artifact = wandb.Artifact(

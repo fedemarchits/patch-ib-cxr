@@ -5,9 +5,31 @@ import time
 import json
 import os
 from tqdm import tqdm
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import roc_auc_score, average_precision_score
+from sklearn.cluster import KMeans
+from sklearn.metrics import normalized_mutual_info_score, adjusted_rand_score
+from sklearn.decomposition import PCA
 import numpy as np
+
+# Lazy imports for visualization (not required for clustering-only evaluation)
+plt = None
+
+
+def _ensure_matplotlib():
+    global plt
+    if plt is None:
+        import matplotlib.pyplot as _plt
+        plt = _plt
+
+
+def _compute_purity(true_labels, cluster_assignments):
+    """Cluster purity: fraction of samples assigned to majority class per cluster."""
+    total = 0
+    for cluster_id in np.unique(cluster_assignments):
+        cluster_mask = cluster_assignments == cluster_id
+        true_in_cluster = true_labels[cluster_mask]
+        most_common_count = np.bincount(true_in_cluster).max()
+        total += most_common_count
+    return total / len(true_labels)
 
 
 def estimate_model_flops(model, image_size=224, text_length=77):
@@ -220,35 +242,8 @@ class Evaluator:
 
         return metrics
 
-    def evaluate_classification(self, num_classes=14):
-        """
-        Linear Probe Classification: Train a linear classifier on frozen embeddings.
-        Uses sklearn LogisticRegression for simplicity.
-        """
-        print("\n[Classification] Linear Probe Evaluation...")
-
-        # 1. Extract embeddings and labels from train set
-        print("   >> Extracting train embeddings...")
-        train_embs = []
-        train_labels = []
-
-        with torch.no_grad():
-            for batch in tqdm(self.train_loader, desc="Train embeddings"):
-                if batch is None:
-                    continue
-                images, text, labels = batch[0].to(self.device), batch[1].to(self.device), batch[2]
-
-                img_emb, _, _, _, _ = self.model(images, text)
-                img_emb = F.normalize(img_emb, dim=-1)
-
-                train_embs.append(img_emb.cpu().numpy())
-                train_labels.append(labels.numpy())
-
-        train_embs = np.concatenate(train_embs, axis=0)
-        train_labels = np.concatenate(train_labels, axis=0)
-
-        # 2. Extract embeddings and labels from test set
-        print("   >> Extracting test embeddings...")
+    def _extract_test_embeddings(self):
+        """Extract L2-normalized image embeddings and labels from the test set."""
         test_embs = []
         test_labels = []
 
@@ -264,43 +259,178 @@ class Evaluator:
                 test_embs.append(img_emb.cpu().numpy())
                 test_labels.append(labels.numpy())
 
-        test_embs = np.concatenate(test_embs, axis=0)
-        test_labels = np.concatenate(test_labels, axis=0)
+        return np.concatenate(test_embs, axis=0), np.concatenate(test_labels, axis=0)
 
-        print(f"   >> Train: {train_embs.shape}, Test: {test_embs.shape}")
+    @staticmethod
+    def _filter_single_label(embs, labels):
+        """Filter to samples with exactly one active label. Returns embs, class_ids."""
+        label_sums = labels.sum(axis=1)
+        mask = (label_sums == 1)
+        sl_embs = embs[mask]
+        sl_class_ids = np.argmax(labels[mask], axis=1)
+        return sl_embs, sl_class_ids
 
-        # 3. Train linear classifiers (one per class for multi-label)
-        print("   >> Training linear classifiers...")
+    def evaluate_clustering(self, num_classes=14):
+        """
+        K-Means clustering evaluation on frozen image embeddings.
+        Uses cosine distance (embeddings are L2-normalized, so Euclidean K-Means
+        is equivalent to cosine K-Means). Single-label test samples only.
 
-        aucs = []
-        aps = []
+        Returns:
+            dict with NMI, ARI, purity, sample counts, class distribution
+        """
+        print("\n[Clustering] K-Means Evaluation...")
 
-        class_results = {}
-        for i in range(num_classes):
-            y_train = train_labels[:, i]
-            y_test = test_labels[:, i]
+        print("   >> Extracting test embeddings...")
+        test_embs, test_labels = self._extract_test_embeddings()
 
-            if y_train.sum() == 0 or y_test.sum() == 0:
-                continue
+        # Filter to single-label samples
+        sl_embs, sl_class_ids = self._filter_single_label(test_embs, test_labels)
+        num_sl = sl_embs.shape[0]
 
-            clf = LogisticRegression(max_iter=1000, solver='lbfgs', class_weight='balanced')
-            clf.fit(train_embs, y_train)
-            y_pred_proba = clf.predict_proba(test_embs)[:, 1]
+        print(f"   >> Total test samples: {test_embs.shape[0]}")
+        print(f"   >> Single-label samples: {num_sl}")
+        print(f"   >> Multi-label excluded: {test_embs.shape[0] - num_sl}")
 
-            auc = roc_auc_score(y_test, y_pred_proba)
-            ap = average_precision_score(y_test, y_pred_proba)
+        if num_sl == 0:
+            print("   >> WARNING: No single-label samples found!")
+            return {"clustering_nmi": 0.0, "clustering_ari": 0.0,
+                    "clustering_purity": 0.0, "clustering_num_single_label_samples": 0}
 
-            aucs.append(auc)
-            aps.append(ap)
-            # Store individual class performance for your thesis table
-            class_results[f"class_{i}_auc"] = auc
+        unique_classes = np.unique(sl_class_ids)
+        n_clusters = len(unique_classes)
+        print(f"   >> Unique classes present: {n_clusters} out of {num_classes}")
 
-        mean_auc = np.mean(aucs) if aucs else 0.0
-        mean_ap = np.mean(aps) if aps else 0.0
-        
-        # Merge dictionaries to return everything
+        # K-Means on L2-normalized embeddings = cosine K-Means
+        print(f"   >> Running K-Means (k={n_clusters}, cosine via L2-norm)...")
+        kmeans = KMeans(n_clusters=n_clusters, n_init=10, random_state=42, max_iter=300)
+        cluster_assignments = kmeans.fit_predict(sl_embs)
+
+        nmi = normalized_mutual_info_score(sl_class_ids, cluster_assignments, average_method='arithmetic')
+        ari = adjusted_rand_score(sl_class_ids, cluster_assignments)
+        purity = _compute_purity(sl_class_ids, cluster_assignments)
+
+        print(f"   >> NMI:    {nmi:.4f}")
+        print(f"   >> ARI:    {ari:.4f}")
+        print(f"   >> Purity: {purity:.4f}")
+
+        class_names = [
+            "Atelectasis", "Cardiomegaly", "Consolidation", "Edema",
+            "Enlarged Cardiomediastinum", "Fracture", "Lung Lesion", "Lung Opacity",
+            "No Finding", "Pleural Effusion", "Pleural Other", "Pneumonia",
+            "Pneumothorax", "Support Devices"
+        ]
+        class_dist = {}
+        print("   >> Class distribution:")
+        for c in unique_classes:
+            count = int((sl_class_ids == c).sum())
+            class_dist[int(c)] = count
+            print(f"      {class_names[c]:30s}: {count}")
+
         return {
-            "classification_mean_auc": mean_auc,
-            "classification_mean_ap": mean_ap,
-            **class_results
+            "clustering_nmi": nmi,
+            "clustering_ari": ari,
+            "clustering_purity": purity,
+            "clustering_num_single_label_samples": num_sl,
+            "clustering_num_classes_present": n_clusters,
+            "clustering_class_distribution": class_dist,
         }
+
+    def generate_umap_visualization(self, output_dir, max_samples=5000):
+        """
+        UMAP visualization of image embeddings colored by class.
+        Pipeline: 512-d -> PCA(50) -> UMAP(2), cosine metric throughout.
+        Single-label test samples only.
+
+        Args:
+            output_dir: Directory to save the figure
+            max_samples: Random subsample cap for UMAP performance
+
+        Returns:
+            Path to saved figure, or None if not enough data
+        """
+        try:
+            import umap
+        except ImportError:
+            print("   >> [UMAP] umap-learn not installed. Install with: pip install umap-learn")
+            return None
+
+        _ensure_matplotlib()
+        print("\n[UMAP] Generating embedding visualization...")
+
+        print("   >> Extracting test embeddings...")
+        test_embs, test_labels = self._extract_test_embeddings()
+
+        sl_embs, sl_class_ids = self._filter_single_label(test_embs, test_labels)
+        num_sl = sl_embs.shape[0]
+        print(f"   >> Single-label samples for UMAP: {num_sl}")
+
+        if num_sl < 10:
+            print("   >> Too few single-label samples for UMAP. Skipping.")
+            return None
+
+        # Subsample if too large
+        if num_sl > max_samples:
+            print(f"   >> Subsampling {num_sl} -> {max_samples}")
+            rng = np.random.RandomState(42)
+            indices = rng.choice(num_sl, size=max_samples, replace=False)
+            sl_embs = sl_embs[indices]
+            sl_class_ids = sl_class_ids[indices]
+            num_sl = max_samples
+
+        # PCA: 512-d -> 50-d (noise reduction before UMAP)
+        n_components = min(50, sl_embs.shape[0], sl_embs.shape[1])
+        print(f"   >> PCA: {sl_embs.shape[1]}-d -> {n_components}-d...")
+        pca = PCA(n_components=n_components, random_state=42)
+        embs_pca = pca.fit_transform(sl_embs)
+        print(f"   >> PCA explained variance: {pca.explained_variance_ratio_.sum():.4f}")
+
+        # UMAP: 50-d -> 2-d with cosine metric
+        print("   >> UMAP: 50-d -> 2-d (cosine)...")
+        reducer = umap.UMAP(
+            n_components=2,
+            n_neighbors=15,
+            min_dist=0.1,
+            metric='cosine',
+            random_state=42,
+        )
+        embs_2d = reducer.fit_transform(embs_pca)
+
+        # Plot
+        class_names = [
+            "Atelectasis", "Cardiomegaly", "Consolidation", "Edema",
+            "Enlarged Cardiomediastinum", "Fracture", "Lung Lesion", "Lung Opacity",
+            "No Finding", "Pleural Effusion", "Pleural Other", "Pneumonia",
+            "Pneumothorax", "Support Devices"
+        ]
+
+        os.makedirs(output_dir, exist_ok=True)
+
+        fig, ax = plt.subplots(1, 1, figsize=(12, 10))
+        unique_classes = np.unique(sl_class_ids)
+        cmap = plt.cm.get_cmap('tab20', len(unique_classes))
+
+        for idx, class_id in enumerate(unique_classes):
+            mask = sl_class_ids == class_id
+            ax.scatter(
+                embs_2d[mask, 0], embs_2d[mask, 1],
+                c=[cmap(idx)],
+                label=class_names[class_id],
+                alpha=0.5, s=8, edgecolors='none',
+            )
+
+        ax.legend(loc='center left', bbox_to_anchor=(1.0, 0.5),
+                  fontsize=8, markerscale=3, frameon=True)
+        ax.set_title(f"UMAP of Image Embeddings ({num_sl} single-label test samples)")
+        ax.set_xlabel("UMAP-1")
+        ax.set_ylabel("UMAP-2")
+        ax.set_xticks([])
+        ax.set_yticks([])
+
+        save_path = os.path.join(output_dir, "umap_embeddings.png")
+        plt.tight_layout()
+        plt.savefig(save_path, dpi=200, bbox_inches='tight')
+        plt.close()
+
+        print(f"   >> Saved to {save_path}")
+        return save_path
