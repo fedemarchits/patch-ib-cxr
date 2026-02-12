@@ -44,34 +44,44 @@ class BidirectionalCrossAttention(nn.Module):
         nn.init.zeros_(self.t2v_out_proj.weight)
         nn.init.zeros_(self.t2v_out_proj.bias)
 
-    def forward(self, x_vit, x_bert, bert_padding_mask=None):
+    def forward(self, x_vit, x_bert, bert_padding_mask=None, return_attention=False):
         """
         Args:
             x_vit:  (B, N_v, D) - ViT hidden states (CLS + patches)
             x_bert: (B, N_t, D) - BERT hidden states (CLS + tokens)
             bert_padding_mask: (B, N_t) - True for padding positions to ignore
+            return_attention: If True, also return attention weights for visualization
 
         Returns:
             x_vit:  (B, N_v, D) - updated ViT hidden states
             x_bert: (B, N_t, D) - updated BERT hidden states
+            (optional) v2t_weights: (B, N_v, N_t) - image-to-text attention weights
+            (optional) t2v_weights: (B, N_t, N_v) - text-to-image attention weights
         """
         # Direction 1: ViT queries BERT (image attends to text)
         q_vit = self.v2t_norm(x_vit)
-        v2t_out, _ = self.v2t_attn(
+        v2t_out, v2t_weights = self.v2t_attn(
             query=q_vit,
             key=x_bert,
             value=x_bert,
             key_padding_mask=bert_padding_mask,
+            need_weights=return_attention,
+            average_attn_weights=True,
         )
         x_vit = x_vit + self.v2t_out_proj(v2t_out)
 
         # Direction 2: BERT queries ViT (text attends to image)
         q_bert = self.t2v_norm(x_bert)
-        t2v_out, _ = self.t2v_attn(
+        t2v_out, t2v_weights = self.t2v_attn(
             query=q_bert,
             key=x_vit,
             value=x_vit,
+            need_weights=return_attention,
+            average_attn_weights=True,
         )
         x_bert = x_bert + self.t2v_out_proj(t2v_out)
+
+        if return_attention:
+            return x_vit, x_bert, v2t_weights, t2v_weights
 
         return x_vit, x_bert

@@ -374,3 +374,267 @@ def visualize_token_attention(
 
     print(f"[Visualizer] Saved {samples_saved} token attention visualizations")
     return samples_saved
+
+
+def visualize_mid_fusion_attention(
+    model,
+    dataloader,
+    device,
+    output_dir,
+    num_samples=10,
+    use_amp=False,
+    image_size=224,
+    patch_size=16
+):
+    """
+    Visualize cross-attention maps from mid-fusion modules.
+
+    For each fusion layer, shows the text-to-image (t2v) attention averaged
+    across text tokens, indicating which image regions the text attends to.
+
+    Args:
+        model: Model with mid-fusion modules
+        dataloader: DataLoader with images
+        device: Device to use
+        output_dir: Directory to save visualizations
+        num_samples: Number of samples to visualize
+        use_amp: Whether to use automatic mixed precision
+        image_size: Original image size (224)
+        patch_size: Patch size (16 for ViT-B/16)
+    """
+    _ensure_matplotlib()
+    model.eval()
+    os.makedirs(output_dir, exist_ok=True)
+
+    grid_size = image_size // patch_size  # 14
+
+    # Enable attention weight storage
+    model.store_attention_weights = True
+
+    # Get fusion layer names for titles
+    fusion_layers = [idx + 1 for idx in model.mid_fusion_layer_indices]  # 1-indexed
+    num_modules = len(fusion_layers)
+
+    samples_saved = 0
+    print(f"\n[Visualizer] Generating {num_samples} mid-fusion attention visualizations...")
+
+    with torch.no_grad():
+        for batch in tqdm(dataloader, desc="Mid-Fusion Attention"):
+            if batch is None:
+                continue
+
+            images, text = batch[0].to(device), batch[1].to(device)
+
+            with torch.amp.autocast(device_type=device, enabled=use_amp):
+                model(images, text)
+
+            attn_weights = model._mid_fusion_attn_weights
+            if attn_weights is None or len(attn_weights) == 0:
+                print("[Visualizer] No mid-fusion attention weights found, skipping")
+                model.store_attention_weights = False
+                return 0
+
+            for i in range(images.shape[0]):
+                if samples_saved >= num_samples:
+                    break
+
+                img_np = denormalize_image(images[i].cpu())
+
+                # --- Overview figure: one column per fusion layer ---
+                fig, axes = plt.subplots(1, num_modules + 1, figsize=(5 * (num_modules + 1), 5))
+
+                axes[0].imshow(img_np)
+                axes[0].set_title("Original Image")
+                axes[0].axis('off')
+
+                for m, (v2t_w, t2v_w) in enumerate(attn_weights):
+                    # t2v_w: (B, L_text, N_vit) where N_vit = 197 (CLS + 196 patches)
+                    t2v = t2v_w[i].cpu()  # (L, 197)
+
+                    # Exclude CLS token (position 0 of ViT keys) -> (L, 196)
+                    t2v_patches = t2v[:, 1:]
+
+                    # Average across text tokens -> (196,)
+                    avg_attn = t2v_patches.mean(dim=0)
+                    attn_grid = avg_attn.view(grid_size, grid_size).numpy()
+                    attn_up = upsample_mask(attn_grid, img_np.shape[:2])
+
+                    axes[m + 1].imshow(img_np)
+                    im = axes[m + 1].imshow(attn_up, cmap='hot', alpha=0.6)
+                    axes[m + 1].set_title(f"Layer {fusion_layers[m]} (t2v)")
+                    axes[m + 1].axis('off')
+                    plt.colorbar(im, ax=axes[m + 1], fraction=0.046, pad=0.04)
+
+                plt.suptitle(f"Mid-Fusion Cross-Attention (Sample {samples_saved})")
+                plt.tight_layout()
+                plt.savefig(
+                    os.path.join(output_dir, f"midfusion_t2v_sample_{samples_saved}.png"),
+                    dpi=150, bbox_inches='tight'
+                )
+                plt.close()
+
+                # --- v2t overview: which text tokens each patch attends to ---
+                fig, axes = plt.subplots(1, num_modules + 1, figsize=(5 * (num_modules + 1), 5))
+
+                axes[0].imshow(img_np)
+                axes[0].set_title("Original Image")
+                axes[0].axis('off')
+
+                for m, (v2t_w, t2v_w) in enumerate(attn_weights):
+                    # v2t_w: (B, N_vit, L_text) where N_vit = 197
+                    v2t = v2t_w[i].cpu()  # (197, L)
+
+                    # Patches only (exclude CLS query) -> (196, L)
+                    v2t_patches = v2t[1:, :]
+
+                    # Entropy of each patch's attention over text tokens
+                    # High entropy = patch attends broadly, Low = focused on specific tokens
+                    v2t_probs = v2t_patches + 1e-8
+                    entropy = -(v2t_probs * torch.log(v2t_probs)).sum(dim=-1)  # (196,)
+                    entropy_grid = entropy.view(grid_size, grid_size).numpy()
+                    entropy_up = upsample_mask(entropy_grid, img_np.shape[:2])
+
+                    axes[m + 1].imshow(img_np)
+                    im = axes[m + 1].imshow(entropy_up, cmap='viridis', alpha=0.6)
+                    axes[m + 1].set_title(f"Layer {fusion_layers[m]} (v2t entropy)")
+                    axes[m + 1].axis('off')
+                    plt.colorbar(im, ax=axes[m + 1], fraction=0.046, pad=0.04)
+
+                plt.suptitle(f"Mid-Fusion v2t Attention Entropy (Sample {samples_saved})")
+                plt.tight_layout()
+                plt.savefig(
+                    os.path.join(output_dir, f"midfusion_v2t_entropy_sample_{samples_saved}.png"),
+                    dpi=150, bbox_inches='tight'
+                )
+                plt.close()
+
+                samples_saved += 1
+
+            if samples_saved >= num_samples:
+                break
+
+    # Disable attention weight storage
+    model.store_attention_weights = False
+    model._mid_fusion_attn_weights = None
+
+    print(f"[Visualizer] Saved {samples_saved} mid-fusion attention visualizations to {output_dir}")
+    return samples_saved
+
+
+def visualize_mid_fusion_token_attention(
+    model,
+    dataloader,
+    device,
+    output_dir,
+    num_samples=5,
+    tokens_to_show=5,
+    use_amp=False,
+    image_size=224,
+    patch_size=16
+):
+    """
+    Visualize per-token cross-attention maps at each mid-fusion layer.
+
+    Shows which image patches each individual text token attends to,
+    one figure per sample with rows = fusion layers, columns = tokens.
+
+    Args:
+        model: Model with mid-fusion modules
+        dataloader: DataLoader with images
+        device: Device to use
+        output_dir: Directory to save visualizations
+        num_samples: Number of samples to visualize
+        tokens_to_show: Number of text tokens to display per sample
+        use_amp: Whether to use automatic mixed precision
+        image_size: Original image size
+        patch_size: Patch size
+    """
+    _ensure_matplotlib()
+    model.eval()
+    os.makedirs(output_dir, exist_ok=True)
+
+    grid_size = image_size // patch_size
+
+    model.store_attention_weights = True
+
+    fusion_layers = [idx + 1 for idx in model.mid_fusion_layer_indices]
+    num_modules = len(fusion_layers)
+
+    samples_saved = 0
+    print(f"\n[Visualizer] Generating per-token mid-fusion attention visualizations...")
+
+    with torch.no_grad():
+        for batch in tqdm(dataloader, desc="Token Mid-Fusion Attn"):
+            if batch is None:
+                continue
+
+            images, text = batch[0].to(device), batch[1].to(device)
+
+            with torch.amp.autocast(device_type=device, enabled=use_amp):
+                model(images, text)
+
+            attn_weights = model._mid_fusion_attn_weights
+            if attn_weights is None or len(attn_weights) == 0:
+                model.store_attention_weights = False
+                return 0
+
+            # Build attention mask for valid tokens
+            attention_mask = (text != 0).long()
+
+            for i in range(images.shape[0]):
+                if samples_saved >= num_samples:
+                    break
+
+                img_np = denormalize_image(images[i].cpu())
+                mask = attention_mask[i].cpu()
+                valid_indices = torch.where(mask > 0)[0]
+                num_valid = min(len(valid_indices), tokens_to_show)
+
+                if num_valid == 0:
+                    continue
+
+                # rows = fusion layers, columns = original + tokens
+                fig, axes = plt.subplots(
+                    num_modules, num_valid + 1,
+                    figsize=(4 * (num_valid + 1), 4 * num_modules)
+                )
+                if num_modules == 1:
+                    axes = axes[np.newaxis, :]
+
+                for m, (v2t_w, t2v_w) in enumerate(attn_weights):
+                    t2v = t2v_w[i].cpu()  # (L, 197)
+                    t2v_patches = t2v[:, 1:]  # (L, 196)
+
+                    axes[m, 0].imshow(img_np)
+                    axes[m, 0].set_title(f"Layer {fusion_layers[m]}")
+                    axes[m, 0].axis('off')
+
+                    for j, token_idx in enumerate(valid_indices[:num_valid]):
+                        token_attn = t2v_patches[token_idx]  # (196,)
+                        attn_grid = token_attn.view(grid_size, grid_size).numpy()
+                        attn_up = upsample_mask(attn_grid, img_np.shape[:2])
+
+                        axes[m, j + 1].imshow(img_np)
+                        axes[m, j + 1].imshow(attn_up, cmap='hot', alpha=0.6)
+                        if m == 0:
+                            axes[m, j + 1].set_title(f"Token {token_idx.item()}")
+                        axes[m, j + 1].axis('off')
+
+                plt.suptitle(f"Per-Token Mid-Fusion Attention (Sample {samples_saved})")
+                plt.tight_layout()
+                plt.savefig(
+                    os.path.join(output_dir, f"midfusion_token_attn_sample_{samples_saved}.png"),
+                    dpi=150, bbox_inches='tight'
+                )
+                plt.close()
+
+                samples_saved += 1
+
+            if samples_saved >= num_samples:
+                break
+
+    model.store_attention_weights = False
+    model._mid_fusion_attn_weights = None
+
+    print(f"[Visualizer] Saved {samples_saved} per-token mid-fusion visualizations")
+    return samples_saved

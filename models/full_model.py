@@ -135,6 +135,10 @@ class ModelABaseline(nn.Module):
             if self.use_local_alignment:
                 self.log_var_local = nn.Parameter(torch.zeros(1))
 
+        # Visualization flag: set to True to store cross-attention weights
+        self.store_attention_weights = False
+        self._mid_fusion_attn_weights = None
+
     def _project_embedding(self, embedding):
         """Project embedding from 768 -> 512 using backbone's projection layer."""
         visual_model = self.backbone.clip_model.visual
@@ -186,6 +190,7 @@ class ModelABaseline(nn.Module):
         bert_layers = text_encoder.transformer.encoder.layer
         fusion_idx = 0
         mid_fusion_intermediates = []
+        mid_fusion_attentions = [] if self.store_attention_weights else None
 
         for layer_idx in range(12):
             x_vit = vit_blocks[layer_idx](x_vit)
@@ -198,10 +203,19 @@ class ModelABaseline(nn.Module):
                     mid_fusion_intermediates.append(
                         (x_vit[:, 1:, :], x_bert)  # patches (no CLS), tokens
                     )
-                x_vit, x_bert = self.mid_fusion_modules[fusion_idx](
-                    x_vit, x_bert, bert_padding_mask
-                )
+                if self.store_attention_weights:
+                    x_vit, x_bert, v2t_w, t2v_w = self.mid_fusion_modules[fusion_idx](
+                        x_vit, x_bert, bert_padding_mask, return_attention=True
+                    )
+                    mid_fusion_attentions.append((v2t_w, t2v_w))
+                else:
+                    x_vit, x_bert = self.mid_fusion_modules[fusion_idx](
+                        x_vit, x_bert, bert_padding_mask
+                    )
                 fusion_idx += 1
+
+        # Store attention weights for visualization
+        self._mid_fusion_attn_weights = mid_fusion_attentions
 
         # --- ViT final norm ---
         x_vit = vit_trunk.norm(x_vit)

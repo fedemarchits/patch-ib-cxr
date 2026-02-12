@@ -9,7 +9,10 @@ from datetime import datetime
 from models.full_model import ModelABaseline
 from data.dataset import create_dataloaders
 from engine.evaluator import Evaluator
-from engine.visualizer import visualize_attention_samples, visualize_token_attention
+from engine.visualizer import (
+    visualize_attention_samples, visualize_token_attention,
+    visualize_mid_fusion_attention, visualize_mid_fusion_token_attention
+)
 
 # Try to import wandb (optional)
 try:
@@ -213,6 +216,25 @@ if __name__ == "__main__":
         # Visualize per-token attention (if local alignment enabled)
         if cfg.get('model', {}).get('use_local_alignment', False):
             visualize_token_attention(
+                model=model,
+                dataloader=test_loader,
+                device=device,
+                output_dir=vis_dir,
+                num_samples=min(5, args.num_vis_samples),
+                use_amp=use_amp
+            )
+
+        # Visualize mid-fusion cross-attention maps (if mid-fusion enabled)
+        if cfg.get('model', {}).get('use_mid_fusion', False):
+            visualize_mid_fusion_attention(
+                model=model,
+                dataloader=test_loader,
+                device=device,
+                output_dir=vis_dir,
+                num_samples=args.num_vis_samples,
+                use_amp=use_amp
+            )
+            visualize_mid_fusion_token_attention(
                 model=model,
                 dataloader=test_loader,
                 device=device,
