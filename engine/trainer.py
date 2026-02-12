@@ -185,6 +185,9 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
             if loss_local is not None:
                 if use_uncertainty and hasattr(model, 'log_var_local'):
                     local_total = loss_local
+                elif mid_fusion_losses_raw is not None:
+                    # Mid-fusion path: use mf_warmup (not local_weight)
+                    local_total = mf_warmup * loss_local
                 else:
                     local_total = local_weight * loss_local
                 grad_norms['local'] = _grad_norm(local_total)
@@ -304,15 +307,22 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
                     log_dict["loss_balance/local_contribution_pct"] = 100 * local_contrib / (total_contrib + 1e-8)
                     log_dict["loss_balance/contrastive_contribution_pct"] = 100 * contrastive_contrib / (total_contrib + 1e-8)
                 else:
-                    # Fixed weight metrics (original behavior)
-                    weighted_local = local_weight * loss_local.item()
+                    # Determine effective weight for local loss
+                    if mid_fusion_losses_raw is not None:
+                        # Mid-fusion path: weight is mf_warmup
+                        effective_local_weight = mf_warmup
+                    else:
+                        # Standard local alignment path
+                        effective_local_weight = local_weight
+
+                    weighted_local = effective_local_weight * loss_local.item()
                     log_dict["train/local_alignment_loss_weighted"] = weighted_local
 
                     contrastive_val = loss_con_raw.item()
                     log_dict["loss_balance/contrastive_vs_local_ratio"] = contrastive_val / (weighted_local + 1e-8)
                     log_dict["loss_balance/local_contribution_pct"] = 100 * weighted_local / (contrastive_val + weighted_local + 1e-8)
                     log_dict["loss_balance/contrastive_contribution_pct"] = 100 * contrastive_val / (contrastive_val + weighted_local + 1e-8)
-                    log_dict["train/local_weight_current"] = local_weight
+                    log_dict["train/local_weight_current"] = effective_local_weight
 
             # Gradient norm logging
             if grad_norms:

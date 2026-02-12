@@ -192,14 +192,15 @@ class ModelABaseline(nn.Module):
             x_bert = bert_layers[layer_idx](x_bert, attention_mask=extended_mask)[0]
 
             if layer_idx in self.mid_fusion_layer_indices:
-                x_vit, x_bert = self.mid_fusion_modules[fusion_idx](
-                    x_vit, x_bert, bert_padding_mask
-                )
-                # Collect intermediate states for local loss
+                # Collect BEFORE cross-attention so the local loss measures
+                # independent encoder alignment (cross-attention can't shortcut)
                 if self.use_mid_fusion_local_loss:
                     mid_fusion_intermediates.append(
                         (x_vit[:, 1:, :], x_bert)  # patches (no CLS), tokens
                     )
+                x_vit, x_bert = self.mid_fusion_modules[fusion_idx](
+                    x_vit, x_bert, bert_padding_mask
+                )
                 fusion_idx += 1
 
         # --- ViT final norm ---
