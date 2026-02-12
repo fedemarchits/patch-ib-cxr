@@ -182,12 +182,20 @@ class Evaluator:
     def compute_retrieval(self):
         """
         Compute R@1, R@5, R@10 for Image-to-Text and Text-to-Image.
+
+        For mid-fusion models, uses independent encoding (bypassing cross-attention)
+        to avoid information leakage between modalities during evaluation.
         """
-        print("\n[Retrieval] Extracting embeddings...")
-        
+        # Detect mid-fusion: use independent encoding to avoid retrieval cheating
+        use_independent = hasattr(self.model, 'use_mid_fusion') and self.model.use_mid_fusion
+        if use_independent:
+            print("\n[Retrieval] Mid-fusion detected: using independent encoding (no cross-attention)")
+        else:
+            print("\n[Retrieval] Extracting embeddings...")
+
         img_embs = []
         txt_embs = []
-        
+
         # 1. Extract Embeddings
         with torch.no_grad():
             for batch in tqdm(self.test_loader, desc="Extracting"):
@@ -195,14 +203,14 @@ class Evaluator:
                     continue
 
                 images, text = batch[0].to(self.device), batch[1].to(self.device)
-                
-                # Model returns: img_emb, txt_emb, logits, local_features
-                i_emb, t_emb, _, _, _ = self.model(images, text)
-                
-                # Normalize (Crucial for Cosine Similarity)
-                i_emb = F.normalize(i_emb, dim=-1)
-                t_emb = F.normalize(t_emb, dim=-1)
-                
+
+                if use_independent:
+                    i_emb, t_emb = self.model.encode_independent(images, text)
+                else:
+                    i_emb, t_emb, _, _, _ = self.model(images, text)
+                    i_emb = F.normalize(i_emb, dim=-1)
+                    t_emb = F.normalize(t_emb, dim=-1)
+
                 img_embs.append(i_emb.cpu())
                 txt_embs.append(t_emb.cpu())
                 

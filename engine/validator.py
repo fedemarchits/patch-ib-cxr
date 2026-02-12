@@ -291,8 +291,15 @@ def validate(model, dataloader, criterions, device, use_amp, compute_retrieval=F
 
         # Collect embeddings for retrieval
         if compute_retrieval:
-            all_img_emb.append(img_emb.float().cpu())
-            all_txt_emb.append(txt_emb.float().cpu())
+            # Mid-fusion models: use independent encoding to avoid cross-attn leakage
+            use_mid_fusion = hasattr(model, 'use_mid_fusion') and model.use_mid_fusion
+            if use_mid_fusion:
+                ind_img, ind_txt = model.encode_independent(images, text)
+                all_img_emb.append(ind_img.float().cpu())
+                all_txt_emb.append(ind_txt.float().cpu())
+            else:
+                all_img_emb.append(img_emb.float().cpu())
+                all_txt_emb.append(txt_emb.float().cpu())
 
     avg_loss = total_loss / num_batches if num_batches > 0 else 0
 

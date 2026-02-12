@@ -338,3 +338,29 @@ class ModelABaseline(nn.Module):
             # =======================================================
 
         return img_embedding, text_embedding, importance_logits, local_features, img_emb_full
+
+    @torch.no_grad()
+    def encode_independent(self, images, text):
+        """
+        Encode image and text independently through the backbone, bypassing
+        mid-fusion cross-attention. This produces unimodal embeddings suitable
+        for retrieval evaluation (no information leakage between modalities).
+
+        The backbone weights are still shaped by mid-fusion training via
+        gradient flow, so the representations reflect training quality.
+
+        Returns:
+            img_emb: (B, 512) L2-normalized image embeddings
+            txt_emb: (B, 512) L2-normalized text embeddings
+        """
+        # Image: backbone patches -> CLS -> project -> normalize
+        features = self.backbone.encode_image_patches(images)
+        cls_token = features[:, 0, :]
+        img_emb = self._project_embedding(cls_token)
+        img_emb = F.normalize(img_emb, p=2, dim=-1)
+
+        # Text: backbone encode -> normalize
+        txt_emb = self.backbone.encode_text(text)
+        txt_emb = F.normalize(txt_emb, p=2, dim=-1)
+
+        return img_emb, txt_emb
