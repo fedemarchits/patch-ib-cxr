@@ -21,12 +21,9 @@ model:
   use_mid_fusion: true
   mid_fusion_layers: [4, 8, 12]
   mid_fusion_n_heads: 4
-  mid_fusion_loss_weights: [1.0, 1.0, 1.0]
+  # mid_fusion_loss_weights: disabled — local loss conflicts with independent contrastive
   mid_fusion_loss_type: "cosine"
   mid_fusion_loss_symmetric: true
-  mid_fusion_loss_warmup_steps: 600
-  mid_fusion_loss_dynamic_scale: true
-  mid_fusion_loss_target_ratio: 0.1
   use_local_alignment: false
 
 training:

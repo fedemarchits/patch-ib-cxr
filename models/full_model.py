@@ -243,31 +243,40 @@ class ModelABaseline(nn.Module):
         topk_indices = None
 
         if self.use_mid_fusion:
-            # ============ MID-FUSION PATH (Model E) ============
-            # 1. Lockstep forward with cross-attention (for local loss only)
+            # ============ MID-FUSION PATH — Dual Contrastive (ALBEF-style) ============
+            # 1. Lockstep forward with cross-attention
             vit_features, bert_hidden, attention_mask, mid_intermediates = \
                 self._forward_mid_fusion(images, text)
 
-            # 2. Independent embeddings for contrastive loss
-            #    Avoids train/eval mismatch: retrieval uses independent encoding,
-            #    so contrastive loss must optimize the same representation.
-            #    Matches ALBEF/BLIP design: ITC on unimodal, fusion as auxiliary.
-            features_ind = self.backbone.encode_image_patches(images)
-            cls_ind = features_ind[:, 0, :]
-            img_embedding = self._project_embedding(cls_ind)
+            # 2. Fused embeddings (primary contrastive loss — trains cross-attention + backbone)
+            cls_token = vit_features[:, 0, :]
+            img_embedding = self._project_embedding(cls_token)
             img_embedding = F.normalize(img_embedding, p=2, dim=-1)
 
-            text_embedding = self.backbone.encode_text(text)
+            text_embedding = self._pool_and_project_text(bert_hidden)
             text_embedding = F.normalize(text_embedding, p=2, dim=-1)
 
-            # 3. Mid-fusion local loss: project intermediate features at each fusion point
+            # 3. Independent embeddings (second contrastive loss — ensures retrieval works)
+            #    Backbone weights are shared so both losses update them.
+            features_ind = self.backbone.encode_image_patches(images)
+            cls_ind = features_ind[:, 0, :]
+            img_emb_ind = self._project_embedding(cls_ind)
+            img_emb_ind = F.normalize(img_emb_ind, p=2, dim=-1)
+
+            txt_emb_ind = self.backbone.encode_text(text)
+            txt_emb_ind = F.normalize(txt_emb_ind, p=2, dim=-1)
+
+            # Pack independent embeddings into img_emb_full slot
+            img_emb_full = (img_emb_ind, txt_emb_ind)
+
+            # 4. Mid-fusion local loss (optional, from lockstep intermediates)
             if self.use_mid_fusion_local_loss and mid_intermediates:
                 local_features = []
                 for k, (patches_768, tokens_768) in enumerate(mid_intermediates):
                     pf = F.normalize(self.mid_fusion_patch_projs[k](patches_768), dim=-1)
                     tf = F.normalize(self.mid_fusion_token_projs[k](tokens_768), dim=-1)
                     local_features.append((pf, tf, attention_mask))
-            # ===================================================
+            # =====================================================================
         else:
             # ============ STANDARD PATH (Models A/B/C/D) ============
             # 1. Get Raw Features (Batch, 197, 768)

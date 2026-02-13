@@ -82,17 +82,25 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
 
             loss = loss_con * contrastive_mask_weight
 
-            # ============ PATCH-IB LOSSES ============
-            # InfoNCE on full embeddings (if Patch-IB enabled)
+            # ============ DUAL CONTRASTIVE / PATCH-IB LOSSES ============
             loss_con_full_raw = None
             loss_con_full = None
+            loss_con_ind_raw = None
+
             if img_emb_full is not None:
-                loss_con_full_raw = contrastive_criterion(img_emb_full, txt_emb, model.logit_scale)
-                if use_uncertainty:
-                    loss_con_full = loss_con_full_raw * torch.exp(-log_var_con) + log_var_con
+                if isinstance(img_emb_full, tuple):
+                    # Mid-fusion: independent contrastive loss (for retrieval)
+                    ind_img, ind_txt = img_emb_full
+                    loss_con_ind_raw = contrastive_criterion(ind_img, ind_txt, model.logit_scale)
+                    loss = loss + loss_con_ind_raw * contrastive_full_weight
                 else:
-                    loss_con_full = loss_con_full_raw
-                loss = loss + loss_con_full * contrastive_full_weight
+                    # Patch-IB: full embedding contrastive loss
+                    loss_con_full_raw = contrastive_criterion(img_emb_full, txt_emb, model.logit_scale)
+                    if use_uncertainty:
+                        loss_con_full = loss_con_full_raw * torch.exp(-log_var_con) + log_var_con
+                    else:
+                        loss_con_full = loss_con_full_raw
+                    loss = loss + loss_con_full * contrastive_full_weight
 
             # Sparsity loss (if masking enabled)
             loss_sparse = None
@@ -104,9 +112,9 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
                 loss_sparse = sparsity_criterion(logits) * sparsity_weight * sparsity_warmup_factor
                 loss = loss + loss_sparse
 
-            # Consistency loss (if Patch-IB enabled)
+            # Consistency loss (Patch-IB only, not mid-fusion)
             loss_consistency = None
-            if consistency_criterion is not None and img_emb_full is not None:
+            if consistency_criterion is not None and img_emb_full is not None and not isinstance(img_emb_full, tuple):
                 loss_consistency = consistency_criterion(
                     img_emb_full, img_emb, txt_emb, model.logit_scale
                 ) * consistency_weight
@@ -289,6 +297,8 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
             # Patch-IB specific logging
             if loss_con_full_raw is not None:
                 log_dict["train/contrastive_full_loss_raw"] = loss_con_full_raw.item()
+            if loss_con_ind_raw is not None:
+                log_dict["train/contrastive_independent_loss_raw"] = loss_con_ind_raw.item()
             if loss_consistency is not None:
                 log_dict["train/consistency_loss"] = loss_consistency.item()
 

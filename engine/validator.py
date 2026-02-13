@@ -250,7 +250,7 @@ def validate(model, dataloader, criterions, device, use_amp, compute_retrieval=F
         images, text = batch[0].to(device), batch[1].to(device)
 
         with torch.amp.autocast(device_type=device, enabled=use_amp):
-            img_emb, txt_emb, _, local_features, _ = model(images, text)
+            img_emb, txt_emb, _, local_features, img_emb_full = model(images, text)
             loss_con_raw = contrastive_criterion(img_emb, txt_emb, model.logit_scale)
 
             if use_uncertainty:
@@ -258,6 +258,12 @@ def validate(model, dataloader, criterions, device, use_amp, compute_retrieval=F
                 loss = loss_con_raw * torch.exp(-log_var_con) + log_var_con
             else:
                 loss = loss_con_raw
+
+            # Independent contrastive loss (mid-fusion dual contrastive)
+            if isinstance(img_emb_full, tuple):
+                ind_img, ind_txt = img_emb_full
+                loss_con_ind = contrastive_criterion(ind_img, ind_txt, model.logit_scale)
+                loss = loss + loss_con_ind
 
             # Include local alignment loss if enabled
             if local_criterion is not None and local_features is not None:
@@ -298,10 +304,9 @@ def validate(model, dataloader, criterions, device, use_amp, compute_retrieval=F
 
         # Collect embeddings for retrieval
         if compute_retrieval:
-            # Mid-fusion models: use independent encoding to avoid cross-attn leakage
-            use_mid_fusion = hasattr(model, 'use_mid_fusion') and model.use_mid_fusion
-            if use_mid_fusion:
-                ind_img, ind_txt = model.encode_independent(images, text)
+            if isinstance(img_emb_full, tuple):
+                # Mid-fusion: use independent embeddings (no cross-attn leakage)
+                ind_img, ind_txt = img_emb_full
                 all_img_emb.append(ind_img.float().cpu())
                 all_txt_emb.append(ind_txt.float().cpu())
             else:
