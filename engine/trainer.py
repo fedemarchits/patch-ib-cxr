@@ -19,6 +19,8 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
     # Mid-fusion local loss (per-module weights)
     mid_fusion_loss_weights = criterion.get('mid_fusion_loss_weights', None)
     mid_fusion_warmup_steps = criterion.get('mid_fusion_warmup_steps', 0)
+    mid_fusion_dynamic_scale = criterion.get('mid_fusion_dynamic_scale', False)
+    mid_fusion_target_ratio = criterion.get('mid_fusion_target_ratio', 0.1)
 
     # Patch-IB specific losses and weights
     consistency_criterion = criterion.get('consistency', None)
@@ -137,7 +139,15 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
                         loss_local_raw = loss_local_raw + weights[k] * l_k
 
                     loss_local = loss_local_raw
-                    loss = loss + mf_warmup * loss_local
+
+                    if mid_fusion_dynamic_scale:
+                        # Dynamic scaling: keep local loss as target_ratio of contrastive
+                        # Scale is detached so gradients only flow through loss_local
+                        with torch.no_grad():
+                            dynamic_scale = mid_fusion_target_ratio * loss_con_raw.detach() / (loss_local.detach() + 1e-8)
+                        loss = loss + mf_warmup * dynamic_scale * loss_local
+                    else:
+                        loss = loss + mf_warmup * loss_local
                 else:
                     # ---- Standard local alignment loss ----
                     if len(local_features) == 5:
@@ -186,8 +196,13 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
                 if use_uncertainty and hasattr(model, 'log_var_local'):
                     local_total = loss_local
                 elif mid_fusion_losses_raw is not None:
-                    # Mid-fusion path: use mf_warmup (not local_weight)
-                    local_total = mf_warmup * loss_local
+                    # Mid-fusion path: use mf_warmup and dynamic scale if enabled
+                    if mid_fusion_dynamic_scale:
+                        with torch.no_grad():
+                            ds = mid_fusion_target_ratio * loss_con_raw.detach() / (loss_local.detach() + 1e-8)
+                        local_total = mf_warmup * ds * loss_local
+                    else:
+                        local_total = mf_warmup * loss_local
                 else:
                     local_total = local_weight * loss_local
                 grad_norms['local'] = _grad_norm(local_total)
@@ -309,8 +324,16 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
                 else:
                     # Determine effective weight for local loss
                     if mid_fusion_losses_raw is not None:
-                        # Mid-fusion path: weight is mf_warmup
-                        effective_local_weight = mf_warmup
+                        if mid_fusion_dynamic_scale:
+                            # Dynamic scaling: actual weight = mf_warmup * dynamic_scale
+                            with torch.no_grad():
+                                ds_val = mid_fusion_target_ratio * loss_con_raw.item() / (loss_local.item() + 1e-8)
+                            effective_local_weight = mf_warmup * ds_val
+                            log_dict["train/dynamic_scale"] = ds_val
+                            log_dict["train/dynamic_scale_target_ratio"] = mid_fusion_target_ratio
+                        else:
+                            # Mid-fusion path: weight is mf_warmup
+                            effective_local_weight = mf_warmup
                     else:
                         # Standard local alignment path
                         effective_local_weight = local_weight

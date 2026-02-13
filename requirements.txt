@@ -11,4 +11,5 @@ wandb
 datasets
 pyarrow
 matplotlib
-fvcore 
+umap-learn
+fvcore

@@ -233,6 +233,8 @@ def validate(model, dataloader, criterions, device, use_amp, compute_retrieval=F
 
     # Mid-fusion local loss config
     mid_fusion_loss_weights = criterions.get('mid_fusion_loss_weights', None)
+    mid_fusion_dynamic_scale = criterions.get('mid_fusion_dynamic_scale', False)
+    mid_fusion_target_ratio = criterions.get('mid_fusion_target_ratio', 0.1)
 
     # Check if using uncertainty weighting
     use_uncertainty = hasattr(model, 'use_uncertainty_weighting') and model.use_uncertainty_weighting
@@ -266,7 +268,12 @@ def validate(model, dataloader, criterions, device, use_amp, compute_retrieval=F
                         weights[k] * local_criterion(pf, tf, am)
                         for k, (pf, tf, am) in enumerate(local_features)
                     )
-                    loss = loss + loss_local_raw
+                    if mid_fusion_dynamic_scale:
+                        with torch.no_grad():
+                            ds = mid_fusion_target_ratio * loss_con_raw / (loss_local_raw + 1e-8)
+                        loss = loss + ds * loss_local_raw
+                    else:
+                        loss = loss + loss_local_raw
                 else:
                     # Standard format: single tuple
                     if len(local_features) == 5:

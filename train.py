@@ -160,6 +160,8 @@ def main():
                 )
             criterions['mid_fusion_loss_weights'] = mid_fusion_loss_weights
             criterions['mid_fusion_warmup_steps'] = cfg['model'].get('mid_fusion_loss_warmup_steps', 0)
+            criterions['mid_fusion_dynamic_scale'] = cfg['model'].get('mid_fusion_loss_dynamic_scale', False)
+            criterions['mid_fusion_target_ratio'] = cfg['model'].get('mid_fusion_loss_target_ratio', 0.1)
 
         # Add Patch-IB losses if masking is enabled
         if cfg['model'].get('use_masking', False):
