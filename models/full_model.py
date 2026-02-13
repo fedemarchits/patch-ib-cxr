@@ -244,39 +244,29 @@ class ModelABaseline(nn.Module):
 
         if self.use_mid_fusion:
             # ============ MID-FUSION PATH (Model E) ============
-            # Layer-by-layer lockstep with cross-attention injection
+            # 1. Lockstep forward with cross-attention (for local loss only)
             vit_features, bert_hidden, attention_mask, mid_intermediates = \
                 self._forward_mid_fusion(images, text)
 
-            # Image: CLS token -> project -> normalize
-            cls_token = vit_features[:, 0, :]       # (B, 768)
-            patch_tokens = vit_features[:, 1:, :]    # (B, 196, 768)
-            img_embedding = self._project_embedding(cls_token)
+            # 2. Independent embeddings for contrastive loss
+            #    Avoids train/eval mismatch: retrieval uses independent encoding,
+            #    so contrastive loss must optimize the same representation.
+            #    Matches ALBEF/BLIP design: ITC on unimodal, fusion as auxiliary.
+            features_ind = self.backbone.encode_image_patches(images)
+            cls_ind = features_ind[:, 0, :]
+            img_embedding = self._project_embedding(cls_ind)
             img_embedding = F.normalize(img_embedding, p=2, dim=-1)
 
-            # Text: pool + project -> normalize
-            text_embedding = self._pool_and_project_text(bert_hidden)
+            text_embedding = self.backbone.encode_text(text)
             text_embedding = F.normalize(text_embedding, p=2, dim=-1)
 
-            # Mid-fusion local loss: project intermediate features at each fusion point
+            # 3. Mid-fusion local loss: project intermediate features at each fusion point
             if self.use_mid_fusion_local_loss and mid_intermediates:
                 local_features = []
                 for k, (patches_768, tokens_768) in enumerate(mid_intermediates):
                     pf = F.normalize(self.mid_fusion_patch_projs[k](patches_768), dim=-1)
                     tf = F.normalize(self.mid_fusion_token_projs[k](tokens_768), dim=-1)
                     local_features.append((pf, tf, attention_mask))
-
-            # External LocalAlignModule (if also enabled alongside mid-fusion)
-            elif self.use_local_alignment:
-                patch_features = self.patch_proj(patch_tokens)
-                token_features = self.token_proj(bert_hidden)
-                patch_features = F.normalize(patch_features, dim=-1)
-                token_features = F.normalize(token_features, dim=-1)
-                aligned_features, attn_weights = self.local_align(
-                    token_features, patch_features
-                )
-                local_features = (patch_features, token_features, attention_mask,
-                                  aligned_features, attn_weights)
             # ===================================================
         else:
             # ============ STANDARD PATH (Models A/B/C/D) ============
