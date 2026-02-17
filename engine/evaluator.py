@@ -5,7 +5,7 @@ import time
 import json
 import os
 from tqdm import tqdm
-from sklearn.cluster import KMeans
+from sklearn.mixture import GaussianMixture
 from sklearn.metrics import normalized_mutual_info_score, adjusted_rand_score
 from sklearn.decomposition import PCA
 import numpy as np
@@ -280,14 +280,14 @@ class Evaluator:
 
     def evaluate_clustering(self, num_classes=14):
         """
-        K-Means clustering evaluation on frozen image embeddings.
-        Uses cosine distance (embeddings are L2-normalized, so Euclidean K-Means
-        is equivalent to cosine K-Means). Single-label test samples only.
+        GMM clustering evaluation on frozen image embeddings.
+        PCA(50) for stability, then Gaussian Mixture Model which handles
+        unequal cluster sizes (unlike K-Means). Single-label test samples only.
 
         Returns:
             dict with NMI, ARI, purity, sample counts, class distribution
         """
-        print("\n[Clustering] K-Means Evaluation...")
+        print("\n[Clustering] GMM Evaluation...")
 
         print("   >> Extracting test embeddings...")
         test_embs, test_labels = self._extract_test_embeddings()
@@ -309,10 +309,20 @@ class Evaluator:
         n_clusters = len(unique_classes)
         print(f"   >> Unique classes present: {n_clusters} out of {num_classes}")
 
-        # K-Means on L2-normalized embeddings = cosine K-Means
-        print(f"   >> Running K-Means (k={n_clusters}, cosine via L2-norm)...")
-        kmeans = KMeans(n_clusters=n_clusters, n_init=10, random_state=42, max_iter=300)
-        cluster_assignments = kmeans.fit_predict(sl_embs)
+        # PCA: 512-d -> 50-d for GMM stability (avoids singular covariance)
+        n_pca = min(50, sl_embs.shape[0], sl_embs.shape[1])
+        print(f"   >> PCA: {sl_embs.shape[1]}-d -> {n_pca}-d...")
+        pca = PCA(n_components=n_pca, random_state=42)
+        sl_embs_pca = pca.fit_transform(sl_embs)
+        print(f"   >> PCA explained variance: {pca.explained_variance_ratio_.sum():.4f}")
+
+        # GMM: handles unequal cluster sizes via learned mixing weights
+        print(f"   >> Running GMM (k={n_clusters}, diagonal covariance)...")
+        gmm = GaussianMixture(
+            n_components=n_clusters, covariance_type='diag',
+            n_init=5, random_state=42, max_iter=300
+        )
+        cluster_assignments = gmm.fit_predict(sl_embs_pca)
 
         nmi = normalized_mutual_info_score(sl_class_ids, cluster_assignments, average_method='arithmetic')
         ari = adjusted_rand_score(sl_class_ids, cluster_assignments)

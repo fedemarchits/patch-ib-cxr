@@ -99,7 +99,7 @@ def create_results_report(ret_metrics, cls_metrics, output_dir):
         f"  R@5:   {ret_metrics.get('t2i_R@5', 0):.2f}%",
         f"  R@10:  {ret_metrics.get('t2i_R@10', 0):.2f}%",
         "",
-        "--- Clustering Metrics (K-Means, Cosine, Single-Label Test Samples) ---",
+        "--- Clustering Metrics (GMM, PCA+Diag, Single-Label Test Samples) ---",
         "",
         f"NMI:      {cls_metrics.get('clustering_nmi', 0):.4f}",
         f"ARI:      {cls_metrics.get('clustering_ari', 0):.4f}",
