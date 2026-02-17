@@ -235,6 +235,7 @@ def validate(model, dataloader, criterions, device, use_amp, compute_retrieval=F
     mid_fusion_loss_weights = criterions.get('mid_fusion_loss_weights', None)
     mid_fusion_dynamic_scale = criterions.get('mid_fusion_dynamic_scale', False)
     mid_fusion_target_ratio = criterions.get('mid_fusion_target_ratio', 0.1)
+    is_filip = criterions.get('mid_fusion_loss_type', None) == 'filip'
 
     # Check if using uncertainty weighting
     use_uncertainty = hasattr(model, 'use_uncertainty_weighting') and model.use_uncertainty_weighting
@@ -270,16 +271,24 @@ def validate(model, dataloader, criterions, device, use_amp, compute_retrieval=F
                 if isinstance(local_features, list):
                     # Mid-fusion format: list of (patch_feat, token_feat, mask)
                     weights = mid_fusion_loss_weights or [1.0] * len(local_features)
-                    loss_local_raw = sum(
-                        weights[k] * local_criterion(pf, tf, am)
-                        for k, (pf, tf, am) in enumerate(local_features)
-                    )
-                    if mid_fusion_dynamic_scale:
-                        with torch.no_grad():
-                            ds = mid_fusion_target_ratio * loss_con_raw / (loss_local_raw + 1e-8)
-                        loss = loss + ds * loss_local_raw
+                    if is_filip:
+                        loss_local_raw = sum(
+                            weights[k] * local_criterion(pf, tf, am, model.logit_scale)
+                            for k, (pf, tf, am) in enumerate(local_features)
+                        )
+                        # FILIP: average across layers
+                        loss = loss + loss_local_raw / len(local_features)
                     else:
-                        loss = loss + loss_local_raw
+                        loss_local_raw = sum(
+                            weights[k] * local_criterion(pf, tf, am)
+                            for k, (pf, tf, am) in enumerate(local_features)
+                        )
+                        if mid_fusion_dynamic_scale:
+                            with torch.no_grad():
+                                ds = mid_fusion_target_ratio * loss_con_raw / (loss_local_raw + 1e-8)
+                            loss = loss + ds * loss_local_raw
+                        else:
+                            loss = loss + loss_local_raw
                 else:
                     # Standard format: single tuple
                     if len(local_features) == 5:

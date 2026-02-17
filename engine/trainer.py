@@ -21,6 +21,7 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
     mid_fusion_warmup_steps = criterion.get('mid_fusion_warmup_steps', 0)
     mid_fusion_dynamic_scale = criterion.get('mid_fusion_dynamic_scale', False)
     mid_fusion_target_ratio = criterion.get('mid_fusion_target_ratio', 0.1)
+    is_filip = criterion.get('mid_fusion_loss_type', None) == 'filip'
 
     # Patch-IB specific losses and weights
     consistency_criterion = criterion.get('consistency', None)
@@ -142,13 +143,23 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
                         mf_warmup = 1.0
 
                     for k, (pf, tf, am) in enumerate(local_features):
-                        l_k = local_criterion(pf, tf, am)
+                        if is_filip:
+                            l_k = local_criterion(pf, tf, am, model.logit_scale)
+                        else:
+                            l_k = local_criterion(pf, tf, am)
                         mid_fusion_losses_raw.append(l_k.item())
                         loss_local_raw = loss_local_raw + weights[k] * l_k
 
-                    loss_local = loss_local_raw
+                    if is_filip:
+                        # FILIP: average across layers (all are InfoNCE, same scale)
+                        loss_local = loss_local_raw / len(local_features)
+                    else:
+                        loss_local = loss_local_raw
 
-                    if mid_fusion_dynamic_scale:
+                    if is_filip:
+                        # FILIP: both losses are InfoNCE, no dynamic scale needed
+                        loss = loss + mf_warmup * loss_local
+                    elif mid_fusion_dynamic_scale:
                         # Dynamic scaling: keep local loss as target_ratio of contrastive
                         # Scale is detached so gradients only flow through loss_local
                         with torch.no_grad():

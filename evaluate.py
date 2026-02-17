@@ -99,22 +99,15 @@ def create_results_report(ret_metrics, cls_metrics, output_dir):
         f"  R@5:   {ret_metrics.get('t2i_R@5', 0):.2f}%",
         f"  R@10:  {ret_metrics.get('t2i_R@10', 0):.2f}%",
         "",
-        "--- Clustering Metrics (GMM, PCA+Diag, Single-Label Test Samples) ---",
+        "--- Clustering Metrics (KMeans, Balanced Single-Label Val+Test) ---",
         "",
         f"NMI:      {cls_metrics.get('clustering_nmi', 0):.4f}",
         f"ARI:      {cls_metrics.get('clustering_ari', 0):.4f}",
         f"Purity:   {cls_metrics.get('clustering_purity', 0):.4f}",
-        f"Samples:  {cls_metrics.get('clustering_num_single_label_samples', 0)}",
+        f"Samples:  {cls_metrics.get('clustering_num_single_label_samples', 0)} (balanced)",
         f"Classes:  {cls_metrics.get('clustering_num_classes_present', 0)}",
-        "",
-        "Per-Class Sample Distribution:",
+        f"Per-Class: {cls_metrics.get('clustering_samples_per_class', 'N/A')} samples each",
     ]
-
-    class_dist = cls_metrics.get('clustering_class_distribution', {})
-    for i, name in enumerate(class_names):
-        count = class_dist.get(i, class_dist.get(str(i), 0))
-        if count > 0:
-            report_lines.append(f"  {name:30s}: {count} samples")
 
     report_lines.extend(["", "=" * 60])
 
@@ -184,11 +177,11 @@ if __name__ == "__main__":
     # 3. Load Data
     # We need train_loader to train the classification head!
     print("Loading Data...")
-    train_loader, _, test_loader = create_dataloaders(cfg, batch_size=args.batch_size, return_labels=True)
+    train_loader, val_loader, test_loader = create_dataloaders(cfg, batch_size=args.batch_size, return_labels=True)
 
     # 4. Run Evaluation
-    # Pass train_loader to the evaluator class
-    evaluator = Evaluator(model, train_loader, test_loader, device)
+    # Pass train_loader and val_loader to the evaluator class
+    evaluator = Evaluator(model, train_loader, test_loader, device, val_loader=val_loader)
 
     # A. Efficiency
     eff_metrics = evaluator.benchmark_efficiency(batch_size=args.batch_size)

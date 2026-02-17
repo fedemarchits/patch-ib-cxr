@@ -8,7 +8,7 @@ from torch.amp import GradScaler
 from torch.optim.lr_scheduler import LambdaLR
 
 from models.full_model import ModelABaseline
-from models.losses import ContrastiveLoss, SparsityLoss, LocalAlignmentLoss, ConsistencyLoss
+from models.losses import ContrastiveLoss, SparsityLoss, LocalAlignmentLoss, FILIPContrastiveLoss, ConsistencyLoss
 from data.dataset import create_dataloaders
 from engine.trainer import train_one_epoch
 from engine.utils import EarlyStopping
@@ -151,13 +151,22 @@ def main():
         # Mid-fusion local loss (per-module weights)
         mid_fusion_loss_weights = cfg['model'].get('mid_fusion_loss_weights', None)
         if cfg['model'].get('use_mid_fusion', False) and mid_fusion_loss_weights is not None:
-            # Reuse LocalAlignmentLoss with cosine+symmetric for mid-fusion
-            if 'local_alignment' not in criterions:
-                criterions['local_alignment'] = LocalAlignmentLoss(
-                    temperature=cfg['model'].get('local_alignment_temperature', 1.0),
-                    loss_type=cfg['model'].get('mid_fusion_loss_type', 'cosine'),
-                    symmetric=cfg['model'].get('mid_fusion_loss_symmetric', True)
+            mid_fusion_loss_type = cfg['model'].get('mid_fusion_loss_type', 'cosine')
+
+            if mid_fusion_loss_type == 'filip':
+                # FILIP: InfoNCE-based local loss — naturally co-scales with global contrastive
+                criterions['local_alignment'] = FILIPContrastiveLoss(
+                    weight_i2t=weight_i2t, weight_t2i=weight_t2i
                 )
+                criterions['mid_fusion_loss_type'] = 'filip'
+            else:
+                # Legacy: cosine/mse LocalAlignmentLoss
+                if 'local_alignment' not in criterions:
+                    criterions['local_alignment'] = LocalAlignmentLoss(
+                        temperature=cfg['model'].get('local_alignment_temperature', 1.0),
+                        loss_type=mid_fusion_loss_type,
+                        symmetric=cfg['model'].get('mid_fusion_loss_symmetric', True)
+                    )
             criterions['mid_fusion_loss_weights'] = mid_fusion_loss_weights
             criterions['mid_fusion_warmup_steps'] = cfg['model'].get('mid_fusion_loss_warmup_steps', 0)
             criterions['mid_fusion_dynamic_scale'] = cfg['model'].get('mid_fusion_loss_dynamic_scale', False)
