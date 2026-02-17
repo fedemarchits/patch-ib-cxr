@@ -64,10 +64,9 @@ def estimate_model_flops(model, image_size=224, text_length=77):
 
 
 class Evaluator:
-    def __init__(self, model, train_loader, test_loader, device, val_loader=None):
+    def __init__(self, model, train_loader, test_loader, device):
         self.model = model
         self.test_loader = test_loader
-        self.val_loader = val_loader
         self.device = device
         self.model.eval()
         self.model.to(device)
@@ -251,13 +250,13 @@ class Evaluator:
 
         return metrics
 
-    def _extract_embeddings(self, loader, desc="Extracting embeddings"):
-        """Extract L2-normalized image embeddings and labels from a dataloader."""
-        embs = []
-        labels_list = []
+    def _extract_test_embeddings(self):
+        """Extract L2-normalized image embeddings and labels from the test set."""
+        test_embs = []
+        test_labels = []
 
         with torch.no_grad():
-            for batch in tqdm(loader, desc=desc):
+            for batch in tqdm(self.test_loader, desc="Test embeddings"):
                 if batch is None:
                     continue
                 images, text, labels = batch[0].to(self.device), batch[1].to(self.device), batch[2]
@@ -265,10 +264,10 @@ class Evaluator:
                 img_emb, _, _, _, _ = self.model(images, text)
                 img_emb = F.normalize(img_emb, dim=-1)
 
-                embs.append(img_emb.cpu().numpy())
-                labels_list.append(labels.numpy())
+                test_embs.append(img_emb.cpu().numpy())
+                test_labels.append(labels.numpy())
 
-        return np.concatenate(embs, axis=0), np.concatenate(labels_list, axis=0)
+        return np.concatenate(test_embs, axis=0), np.concatenate(test_labels, axis=0)
 
     @staticmethod
     def _filter_single_label(embs, labels):
@@ -279,91 +278,26 @@ class Evaluator:
         sl_class_ids = np.argmax(labels[mask], axis=1)
         return sl_embs, sl_class_ids
 
-    def _extract_balanced_single_label(self):
-        """
-        Pool embeddings from val + test sets, filter to single-label samples,
-        then undersample each class to the minimum class count.
-        This ensures balanced clusters for KMeans evaluation.
-
-        Results are cached so clustering + UMAP share the same extraction.
-
-        Returns:
-            sl_embs: (N_balanced, D) balanced single-label embeddings
-            sl_class_ids: (N_balanced,) class IDs
-            stats: dict with extraction statistics
-        """
-        if hasattr(self, '_balanced_cache'):
-            print("   >> Using cached balanced single-label data")
-            return self._balanced_cache
-        # Pool from val + test
-        loaders = []
-        if self.val_loader is not None:
-            loaders.append(("val", self.val_loader))
-        loaders.append(("test", self.test_loader))
-
-        all_embs = []
-        all_labels = []
-        for name, loader in loaders:
-            embs, labels = self._extract_embeddings(loader, desc=f"{name} embeddings")
-            all_embs.append(embs)
-            all_labels.append(labels)
-            print(f"   >> {name}: {embs.shape[0]} samples")
-
-        all_embs = np.concatenate(all_embs, axis=0)
-        all_labels = np.concatenate(all_labels, axis=0)
-
-        # Filter to single-label
-        sl_embs, sl_class_ids = self._filter_single_label(all_embs, all_labels)
-        unique_classes = np.unique(sl_class_ids)
-
-        # Find min class count
-        class_counts = {c: int((sl_class_ids == c).sum()) for c in unique_classes}
-        min_count = min(class_counts.values())
-
-        print(f"   >> Single-label samples: {sl_embs.shape[0]} (from {all_embs.shape[0]} total)")
-        print(f"   >> Classes present: {len(unique_classes)}, min class count: {min_count}")
-
-        # Undersample each class to min_count
-        rng = np.random.RandomState(42)
-        balanced_indices = []
-        for c in unique_classes:
-            c_indices = np.where(sl_class_ids == c)[0]
-            chosen = rng.choice(c_indices, size=min_count, replace=False)
-            balanced_indices.append(chosen)
-
-        balanced_indices = np.concatenate(balanced_indices)
-        rng.shuffle(balanced_indices)
-
-        balanced_embs = sl_embs[balanced_indices]
-        balanced_ids = sl_class_ids[balanced_indices]
-
-        stats = {
-            "total_pooled": all_embs.shape[0],
-            "single_label": sl_embs.shape[0],
-            "balanced": balanced_embs.shape[0],
-            "samples_per_class": min_count,
-            "num_classes": len(unique_classes),
-            "class_counts_before": class_counts,
-        }
-        print(f"   >> Balanced: {balanced_embs.shape[0]} samples ({min_count} per class x {len(unique_classes)} classes)")
-
-        self._balanced_cache = (balanced_embs, balanced_ids, stats)
-        return balanced_embs, balanced_ids, stats
-
     def evaluate_clustering(self, num_classes=14):
         """
         KMeans clustering evaluation on frozen image embeddings.
-        Pools val + test sets, filters to single-label, then balances classes
-        (undersample to min class count) so KMeans' equal-cluster-size assumption holds.
-        PCA(50) for noise reduction before clustering.
+        PCA(50) for noise reduction, then KMeans. Single-label test samples only.
 
         Returns:
             dict with NMI, ARI, purity, sample counts, class distribution
         """
-        print("\n[Clustering] KMeans Evaluation (balanced single-label from val+test)...")
+        print("\n[Clustering] KMeans Evaluation...")
 
-        sl_embs, sl_class_ids, stats = self._extract_balanced_single_label()
+        print("   >> Extracting test embeddings...")
+        test_embs, test_labels = self._extract_test_embeddings()
+
+        # Filter to single-label samples
+        sl_embs, sl_class_ids = self._filter_single_label(test_embs, test_labels)
         num_sl = sl_embs.shape[0]
+
+        print(f"   >> Total test samples: {test_embs.shape[0]}")
+        print(f"   >> Single-label samples: {num_sl}")
+        print(f"   >> Multi-label excluded: {test_embs.shape[0] - num_sl}")
 
         if num_sl == 0:
             print("   >> WARNING: No single-label samples found!")
@@ -381,7 +315,7 @@ class Evaluator:
         sl_embs_pca = pca.fit_transform(sl_embs)
         print(f"   >> PCA explained variance: {pca.explained_variance_ratio_.sum():.4f}")
 
-        # KMeans: balanced classes satisfy equal-cluster-size assumption
+        # KMeans clustering
         print(f"   >> Running KMeans (k={n_clusters}, n_init=10)...")
         kmeans = KMeans(
             n_clusters=n_clusters, n_init=10, random_state=42, max_iter=300
@@ -402,9 +336,12 @@ class Evaluator:
             "No Finding", "Pleural Effusion", "Pleural Other", "Pneumonia",
             "Pneumothorax", "Support Devices"
         ]
-        print(f"   >> Balanced class distribution ({stats['samples_per_class']} per class):")
+        class_dist = {}
+        print("   >> Class distribution:")
         for c in unique_classes:
-            print(f"      {class_names[c]:30s}: {stats['samples_per_class']}")
+            count = int((sl_class_ids == c).sum())
+            class_dist[int(c)] = count
+            print(f"      {class_names[c]:30s}: {count}")
 
         return {
             "clustering_nmi": nmi,
@@ -412,14 +349,140 @@ class Evaluator:
             "clustering_purity": purity,
             "clustering_num_single_label_samples": num_sl,
             "clustering_num_classes_present": n_clusters,
-            "clustering_samples_per_class": stats['samples_per_class'],
-            "clustering_class_counts_before_balance": stats['class_counts_before'],
+            "clustering_class_distribution": class_dist,
+        }
+
+    def evaluate_pairwise_clustering(self, output_dir=None):
+        """
+        Pairwise KMeans clustering between every pair of classes.
+        For each pair, filters to those two classes' single-label samples,
+        runs KMeans k=2, and computes NMI/ARI/purity. Generates a heatmap.
+
+        Args:
+            output_dir: If provided, saves heatmap PNGs there.
+
+        Returns:
+            dict with pairwise NMI, ARI, purity matrices and sorted pair rankings.
+        """
+        from itertools import combinations
+
+        class_names = [
+            "Atelectasis", "Cardiomegaly", "Consolidation", "Edema",
+            "Enlarged Cardiomediastinum", "Fracture", "Lung Lesion", "Lung Opacity",
+            "No Finding", "Pleural Effusion", "Pleural Other", "Pneumonia",
+            "Pneumothorax", "Support Devices"
+        ]
+
+        print("\n[Pairwise Clustering] KMeans k=2 for each class pair...")
+
+        print("   >> Extracting test embeddings...")
+        test_embs, test_labels = self._extract_test_embeddings()
+        sl_embs, sl_class_ids = self._filter_single_label(test_embs, test_labels)
+        print(f"   >> Single-label samples: {sl_embs.shape[0]}")
+
+        # PCA on all single-label data (shared projection for fair comparison)
+        n_pca = min(50, sl_embs.shape[0], sl_embs.shape[1])
+        pca = PCA(n_components=n_pca, random_state=42)
+        sl_embs_pca = pca.fit_transform(sl_embs)
+
+        unique_classes = np.unique(sl_class_ids)
+        n_classes = len(unique_classes)
+
+        # Initialize matrices (class_id -> matrix index)
+        id_to_idx = {c: i for i, c in enumerate(unique_classes)}
+        nmi_matrix = np.ones((n_classes, n_classes))
+        ari_matrix = np.ones((n_classes, n_classes))
+        purity_matrix = np.ones((n_classes, n_classes))
+
+        pair_results = []
+
+        for ci, cj in combinations(unique_classes, 2):
+            mask = (sl_class_ids == ci) | (sl_class_ids == cj)
+            pair_embs = sl_embs_pca[mask]
+            pair_labels = sl_class_ids[mask]
+
+            # Need at least 2 samples per class
+            if (pair_labels == ci).sum() < 2 or (pair_labels == cj).sum() < 2:
+                continue
+
+            kmeans = KMeans(n_clusters=2, n_init=10, random_state=42, max_iter=300)
+            assignments = kmeans.fit_predict(pair_embs)
+
+            nmi = normalized_mutual_info_score(pair_labels, assignments, average_method='arithmetic')
+            ari = adjusted_rand_score(pair_labels, assignments)
+            pur = _compute_purity(pair_labels, assignments)
+
+            i, j = id_to_idx[ci], id_to_idx[cj]
+            nmi_matrix[i, j] = nmi_matrix[j, i] = nmi
+            ari_matrix[i, j] = ari_matrix[j, i] = ari
+            purity_matrix[i, j] = purity_matrix[j, i] = pur
+
+            pair_results.append({
+                "class_a": class_names[ci], "class_b": class_names[cj],
+                "nmi": nmi, "ari": ari, "purity": pur,
+                "n_a": int((pair_labels == ci).sum()),
+                "n_b": int((pair_labels == cj).sum()),
+            })
+
+        # Sort by NMI ascending (most confusable pairs first)
+        pair_results.sort(key=lambda x: x['nmi'])
+
+        print(f"\n   >> Top 10 most confusable pairs (lowest NMI):")
+        for r in pair_results[:10]:
+            print(f"      {r['class_a']:30s} vs {r['class_b']:30s}  "
+                  f"NMI={r['nmi']:.3f}  ARI={r['ari']:.3f}  Pur={r['purity']:.3f}  "
+                  f"(n={r['n_a']}+{r['n_b']})")
+
+        print(f"\n   >> Top 10 most separable pairs (highest NMI):")
+        for r in pair_results[-10:][::-1]:
+            print(f"      {r['class_a']:30s} vs {r['class_b']:30s}  "
+                  f"NMI={r['nmi']:.3f}  ARI={r['ari']:.3f}  Pur={r['purity']:.3f}  "
+                  f"(n={r['n_a']}+{r['n_b']})")
+
+        # Generate heatmaps
+        if output_dir is not None:
+            _ensure_matplotlib()
+            os.makedirs(output_dir, exist_ok=True)
+            labels = [class_names[c] for c in unique_classes]
+
+            for metric_name, matrix in [("NMI", nmi_matrix), ("ARI", ari_matrix), ("Purity", purity_matrix)]:
+                fig, ax = plt.subplots(1, 1, figsize=(12, 10))
+                im = ax.imshow(matrix, cmap='RdYlGn', vmin=0, vmax=1)
+
+                ax.set_xticks(range(n_classes))
+                ax.set_yticks(range(n_classes))
+                ax.set_xticklabels(labels, rotation=45, ha='right', fontsize=8)
+                ax.set_yticklabels(labels, fontsize=8)
+
+                # Annotate cells
+                for i in range(n_classes):
+                    for j in range(n_classes):
+                        if i != j:
+                            ax.text(j, i, f"{matrix[i, j]:.2f}",
+                                    ha='center', va='center', fontsize=6,
+                                    color='black' if matrix[i, j] > 0.4 else 'white')
+
+                ax.set_title(f"Pairwise {metric_name} (KMeans k=2, lower = more confusable)")
+                fig.colorbar(im, ax=ax, shrink=0.8)
+                plt.tight_layout()
+
+                save_path = os.path.join(output_dir, f"pairwise_{metric_name.lower()}_heatmap.png")
+                plt.savefig(save_path, dpi=200, bbox_inches='tight')
+                plt.close()
+                print(f"   >> Saved {save_path}")
+
+        return {
+            "pairwise_results": pair_results,
+            "pairwise_nmi_matrix": nmi_matrix,
+            "pairwise_ari_matrix": ari_matrix,
+            "pairwise_purity_matrix": purity_matrix,
         }
 
     def generate_umap_visualization(self, output_dir, max_samples=5000):
         """
         UMAP visualization of image embeddings colored by class.
-        Pipeline: balanced single-label (val+test) -> PCA(50) -> UMAP(2), cosine metric.
+        Pipeline: 512-d -> PCA(50) -> UMAP(2), cosine metric throughout.
+        Single-label test samples only.
 
         Args:
             output_dir: Directory to save the figure
@@ -435,31 +498,27 @@ class Evaluator:
             return None
 
         _ensure_matplotlib()
-        print("\n[UMAP] Generating embedding visualization (balanced single-label from val+test)...")
+        print("\n[UMAP] Generating embedding visualization...")
 
-        sl_embs, sl_class_ids, stats = self._extract_balanced_single_label()
+        print("   >> Extracting test embeddings...")
+        test_embs, test_labels = self._extract_test_embeddings()
+
+        sl_embs, sl_class_ids = self._filter_single_label(test_embs, test_labels)
         num_sl = sl_embs.shape[0]
+        print(f"   >> Single-label samples for UMAP: {num_sl}")
 
         if num_sl < 10:
             print("   >> Too few single-label samples for UMAP. Skipping.")
             return None
 
-        # Subsample if too large (preserving balance)
+        # Subsample if too large
         if num_sl > max_samples:
-            unique_classes = np.unique(sl_class_ids)
-            per_class_cap = max_samples // len(unique_classes)
-            print(f"   >> Subsampling {num_sl} -> ~{per_class_cap * len(unique_classes)} ({per_class_cap} per class)")
+            print(f"   >> Subsampling {num_sl} -> {max_samples}")
             rng = np.random.RandomState(42)
-            indices = []
-            for c in unique_classes:
-                c_idx = np.where(sl_class_ids == c)[0]
-                chosen = rng.choice(c_idx, size=min(per_class_cap, len(c_idx)), replace=False)
-                indices.append(chosen)
-            indices = np.concatenate(indices)
-            rng.shuffle(indices)
+            indices = rng.choice(num_sl, size=max_samples, replace=False)
             sl_embs = sl_embs[indices]
             sl_class_ids = sl_class_ids[indices]
-            num_sl = len(indices)
+            num_sl = max_samples
 
         # PCA: 512-d -> 50-d (noise reduction before UMAP)
         n_components = min(50, sl_embs.shape[0], sl_embs.shape[1])
@@ -499,13 +558,12 @@ class Evaluator:
                 embs_2d[mask, 0], embs_2d[mask, 1],
                 c=[cmap(idx)],
                 label=class_names[class_id],
-                alpha=0.5, s=8, edgecolors='none',
+                alpha=0.6, s=20, edgecolors='none',
             )
 
         ax.legend(loc='center left', bbox_to_anchor=(1.0, 0.5),
                   fontsize=8, markerscale=3, frameon=True)
-        spc = stats['samples_per_class']
-        ax.set_title(f"UMAP of Image Embeddings ({num_sl} balanced single-label samples, {spc}/class)")
+        ax.set_title(f"UMAP of Image Embeddings ({num_sl} single-label test samples)")
         ax.set_xlabel("UMAP-1")
         ax.set_ylabel("UMAP-2")
         ax.set_xticks([])

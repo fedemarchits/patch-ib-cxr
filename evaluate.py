@@ -99,15 +99,22 @@ def create_results_report(ret_metrics, cls_metrics, output_dir):
         f"  R@5:   {ret_metrics.get('t2i_R@5', 0):.2f}%",
         f"  R@10:  {ret_metrics.get('t2i_R@10', 0):.2f}%",
         "",
-        "--- Clustering Metrics (KMeans, Balanced Single-Label Val+Test) ---",
+        "--- Clustering Metrics (KMeans, PCA-50, Single-Label Test Samples) ---",
         "",
         f"NMI:      {cls_metrics.get('clustering_nmi', 0):.4f}",
         f"ARI:      {cls_metrics.get('clustering_ari', 0):.4f}",
         f"Purity:   {cls_metrics.get('clustering_purity', 0):.4f}",
-        f"Samples:  {cls_metrics.get('clustering_num_single_label_samples', 0)} (balanced)",
+        f"Samples:  {cls_metrics.get('clustering_num_single_label_samples', 0)}",
         f"Classes:  {cls_metrics.get('clustering_num_classes_present', 0)}",
-        f"Per-Class: {cls_metrics.get('clustering_samples_per_class', 'N/A')} samples each",
+        "",
+        "Per-Class Sample Distribution:",
     ]
+
+    class_dist = cls_metrics.get('clustering_class_distribution', {})
+    for i, name in enumerate(class_names):
+        count = class_dist.get(i, class_dist.get(str(i), 0))
+        if count > 0:
+            report_lines.append(f"  {name:30s}: {count} samples")
 
     report_lines.extend(["", "=" * 60])
 
@@ -177,11 +184,11 @@ if __name__ == "__main__":
     # 3. Load Data
     # We need train_loader to train the classification head!
     print("Loading Data...")
-    train_loader, val_loader, test_loader = create_dataloaders(cfg, batch_size=args.batch_size, return_labels=True)
+    train_loader, _, test_loader = create_dataloaders(cfg, batch_size=args.batch_size, return_labels=True)
 
     # 4. Run Evaluation
-    # Pass train_loader and val_loader to the evaluator class
-    evaluator = Evaluator(model, train_loader, test_loader, device, val_loader=val_loader)
+    # Pass train_loader to the evaluator class
+    evaluator = Evaluator(model, train_loader, test_loader, device)
 
     # A. Efficiency
     eff_metrics = evaluator.benchmark_efficiency(batch_size=args.batch_size)
@@ -189,14 +196,17 @@ if __name__ == "__main__":
     # B. Retrieval (Zero-Shot)
     ret_metrics = evaluator.compute_retrieval()
 
-    # C. Clustering Evaluation (K-Means, cosine)
+    # C. Clustering Evaluation (KMeans)
     cls_metrics = evaluator.evaluate_clustering()
 
-    # D. UMAP Visualization (always run, single-label test samples)
+    # D. Pairwise Clustering (which pathologies are most confusable?)
     vis_dir = os.path.join(args.output_dir, "visualizations")
+    pairwise_metrics = evaluator.evaluate_pairwise_clustering(output_dir=vis_dir)
+
+    # E. UMAP Visualization (always run, single-label test samples)
     umap_path = evaluator.generate_umap_visualization(output_dir=vis_dir)
 
-    # E. Attention Visualizations (optional)
+    # F. Attention Visualizations (optional)
     if args.visualize:
         vis_dir = os.path.join(args.output_dir, "visualizations")
         use_amp = cfg.get('training', {}).get('use_amp', False)
