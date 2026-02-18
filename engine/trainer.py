@@ -156,10 +156,7 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
                     else:
                         loss_local = loss_local_raw
 
-                    if is_filip:
-                        # FILIP: both losses are InfoNCE, no dynamic scale needed
-                        loss = loss + mf_warmup * loss_local
-                    elif mid_fusion_dynamic_scale:
+                    if mid_fusion_dynamic_scale:
                         # Dynamic scaling: keep local loss as target_ratio of contrastive
                         # Scale is detached so gradients only flow through loss_local
                         with torch.no_grad():

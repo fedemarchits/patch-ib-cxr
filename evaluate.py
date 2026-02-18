@@ -11,7 +11,8 @@ from data.dataset import create_dataloaders
 from engine.evaluator import Evaluator
 from engine.visualizer import (
     visualize_attention_samples, visualize_token_attention,
-    visualize_mid_fusion_attention, visualize_mid_fusion_token_attention
+    visualize_mid_fusion_attention, visualize_mid_fusion_token_attention,
+    visualize_filip_alignment
 )
 
 # Try to import wandb (optional)
@@ -250,6 +251,17 @@ if __name__ == "__main__":
                 num_samples=min(5, args.num_vis_samples),
                 use_amp=use_amp
             )
+
+            # FILIP alignment visualization (if FILIP local loss enabled)
+            if cfg.get('model', {}).get('mid_fusion_loss_type') == 'filip':
+                visualize_filip_alignment(
+                    model=model,
+                    dataloader=test_loader,
+                    device=device,
+                    output_dir=vis_dir,
+                    num_samples=min(5, args.num_vis_samples),
+                    use_amp=use_amp
+                )
 
     # 5. Save Results
     print("\n" + "=" * 60)

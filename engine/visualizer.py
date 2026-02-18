@@ -638,3 +638,172 @@ def visualize_mid_fusion_token_attention(
 
     print(f"[Visualizer] Saved {samples_saved} per-token mid-fusion visualizations")
     return samples_saved
+
+
+def visualize_filip_alignment(
+    model,
+    dataloader,
+    device,
+    output_dir,
+    num_samples=5,
+    tokens_to_show=6,
+    use_amp=False,
+    image_size=224,
+    patch_size=16
+):
+    """
+    Visualize FILIP local alignment: which image regions each word aligns to.
+
+    For each mid-fusion layer, computes cosine similarity between projected
+    patch and token features, then shows a heatmap for the top-N tokens
+    (by max similarity to any patch) with the actual decoded word as title.
+
+    Args:
+        model: Model with mid-fusion + FILIP projection layers
+        dataloader: DataLoader with (images, text, ...) batches
+        device: Device to use
+        output_dir: Directory to save visualizations
+        num_samples: Number of samples to visualize
+        tokens_to_show: Number of top tokens to display per sample
+        use_amp: Whether to use automatic mixed precision
+        image_size: Original image size
+        patch_size: ViT patch size
+    """
+    _ensure_matplotlib()
+    model.eval()
+    os.makedirs(output_dir, exist_ok=True)
+
+    grid_size = image_size // patch_size  # 14
+
+    # We need the tokenizer to decode token IDs back to words
+    import open_clip
+    wrapper = open_clip.get_tokenizer(
+        "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
+    )
+    hf_tok = wrapper.tokenizer
+
+    if not hasattr(model, 'use_mid_fusion_local_loss') or not model.use_mid_fusion_local_loss:
+        print("[Visualizer] FILIP projection layers not found, skipping")
+        return 0
+
+    fusion_layers = [idx + 1 for idx in model.mid_fusion_layer_indices]
+    num_modules = len(fusion_layers)
+
+    samples_saved = 0
+    print(f"\n[Visualizer] Generating {num_samples} FILIP alignment visualizations...")
+
+    with torch.no_grad():
+        for batch in tqdm(dataloader, desc="FILIP Alignment"):
+            if batch is None:
+                continue
+
+            images, text = batch[0].to(device), batch[1].to(device)
+
+            with torch.amp.autocast(device_type=device, enabled=use_amp):
+                _, _, _, local_features, _ = model(images, text)
+
+            if local_features is None or not isinstance(local_features, list):
+                print("[Visualizer] No mid-fusion local features, skipping")
+                return 0
+
+            # Build attention mask for valid tokens (exclude padding)
+            attention_mask = (text != 0).long()
+
+            for i in range(images.shape[0]):
+                if samples_saved >= num_samples:
+                    break
+
+                img_np = denormalize_image(images[i].cpu())
+                mask = attention_mask[i].cpu()  # (L,)
+                text_ids = text[i].cpu()  # (L,)
+
+                # Decode all tokens for this sample
+                token_words = []
+                for tid in text_ids:
+                    if tid.item() == 0:
+                        token_words.append("[PAD]")
+                    else:
+                        token_words.append(hf_tok.decode([tid.item()]).strip())
+
+                # Get valid token indices (skip [CLS], [SEP], [PAD])
+                valid_mask = mask.bool().clone()
+                # Skip CLS (index 0) and SEP tokens
+                valid_mask[0] = False
+                for j in range(len(text_ids)):
+                    if token_words[j] in ("[CLS]", "[SEP]", "[PAD]"):
+                        valid_mask[j] = False
+                valid_indices = torch.where(valid_mask)[0]
+
+                if len(valid_indices) == 0:
+                    continue
+
+                # --- Figure: rows = layers, cols = original + top tokens ---
+                n_tokens_show = min(tokens_to_show, len(valid_indices))
+                fig, axes = plt.subplots(
+                    num_modules, n_tokens_show + 1,
+                    figsize=(3.5 * (n_tokens_show + 1), 3.5 * num_modules)
+                )
+                if num_modules == 1:
+                    axes = axes[np.newaxis, :]
+
+                for m, (pf, tf, am) in enumerate(local_features):
+                    # pf: (B, M, D), tf: (B, L, D) — projected features
+                    patch_feat = F.normalize(pf[i].cpu().float(), dim=-1)  # (M, D)
+                    token_feat = F.normalize(tf[i].cpu().float(), dim=-1)  # (L, D)
+
+                    # Cosine similarity: (L, M)
+                    cos_sim = token_feat @ patch_feat.t()  # (L, M)
+
+                    # For each valid token, get its max similarity to any patch
+                    valid_cos = cos_sim[valid_indices]  # (N_valid, M)
+                    max_per_token = valid_cos.max(dim=1).values  # (N_valid,)
+
+                    # Top tokens by max similarity
+                    top_k = min(n_tokens_show, len(max_per_token))
+                    top_indices_in_valid = max_per_token.topk(top_k).indices
+                    top_token_indices = valid_indices[top_indices_in_valid]
+
+                    # Original image in first column
+                    axes[m, 0].imshow(img_np)
+                    axes[m, 0].set_title(f"Layer {fusion_layers[m]}", fontsize=10, fontweight='bold')
+                    axes[m, 0].axis('off')
+
+                    for j, tok_idx in enumerate(top_token_indices):
+                        tok_idx = tok_idx.item()
+                        word = token_words[tok_idx]
+                        sim_to_patches = cos_sim[tok_idx]  # (M,)
+                        sim_grid = sim_to_patches.view(grid_size, grid_size).numpy()
+                        sim_up = upsample_mask(sim_grid, img_np.shape[:2])
+
+                        axes[m, j + 1].imshow(img_np)
+                        im = axes[m, j + 1].imshow(
+                            sim_up, cmap='hot', alpha=0.65,
+                            vmin=sim_grid.min(), vmax=sim_grid.max()
+                        )
+                        score = max_per_token[top_indices_in_valid[j]].item()
+                        axes[m, j + 1].set_title(f'"{word}" ({score:.2f})', fontsize=9)
+                        axes[m, j + 1].axis('off')
+
+                # Build caption from all valid tokens
+                caption = " ".join(token_words[idx.item()] for idx in valid_indices)
+                if len(caption) > 100:
+                    caption = caption[:100] + "..."
+
+                plt.suptitle(
+                    f"FILIP Alignment (Sample {samples_saved})\n{caption}",
+                    fontsize=10, y=1.02
+                )
+                plt.tight_layout()
+                plt.savefig(
+                    os.path.join(output_dir, f"filip_alignment_sample_{samples_saved}.png"),
+                    dpi=150, bbox_inches='tight'
+                )
+                plt.close()
+
+                samples_saved += 1
+
+            if samples_saved >= num_samples:
+                break
+
+    print(f"[Visualizer] Saved {samples_saved} FILIP alignment visualizations to {output_dir}")
+    return samples_saved

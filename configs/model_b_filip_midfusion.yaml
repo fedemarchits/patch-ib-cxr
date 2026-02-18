@@ -22,7 +22,7 @@ model:
   mid_fusion_layers: [4, 8, 12]
   mid_fusion_n_heads: 4
   mid_fusion_loss_type: "filip"
-  mid_fusion_loss_weights: [0.1, 0.1, 0.1]
+  mid_fusion_loss_weights: [0.01, 0.01, 0.01]
   mid_fusion_loss_warmup_steps: 500
   use_local_alignment: false
 

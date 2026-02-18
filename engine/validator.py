@@ -277,18 +277,19 @@ def validate(model, dataloader, criterions, device, use_amp, compute_retrieval=F
                             for k, (pf, tf, am) in enumerate(local_features)
                         )
                         # FILIP: average across layers
-                        loss = loss + loss_local_raw / len(local_features)
+                        loss_local_raw = loss_local_raw / len(local_features)
                     else:
                         loss_local_raw = sum(
                             weights[k] * local_criterion(pf, tf, am)
                             for k, (pf, tf, am) in enumerate(local_features)
                         )
-                        if mid_fusion_dynamic_scale:
-                            with torch.no_grad():
-                                ds = mid_fusion_target_ratio * loss_con_raw / (loss_local_raw + 1e-8)
-                            loss = loss + ds * loss_local_raw
-                        else:
-                            loss = loss + loss_local_raw
+
+                    if mid_fusion_dynamic_scale:
+                        with torch.no_grad():
+                            ds = mid_fusion_target_ratio * loss_con_raw / (loss_local_raw + 1e-8)
+                        loss = loss + ds * loss_local_raw
+                    else:
+                        loss = loss + loss_local_raw
                 else:
                     # Standard format: single tuple
                     if len(local_features) == 5:
