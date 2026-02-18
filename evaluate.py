@@ -14,6 +14,7 @@ from engine.visualizer import (
     visualize_mid_fusion_attention, visualize_mid_fusion_token_attention,
     visualize_filip_alignment
 )
+from engine.grounding_evaluator import evaluate_phrase_grounding
 
 # Try to import wandb (optional)
 try:
@@ -143,6 +144,8 @@ if __name__ == "__main__":
     parser.add_argument("--wandb", action="store_true", help="Upload results to Weights & Biases")
     parser.add_argument("--wandb_project", type=str, default="Thesis-PatchIB", help="W&B project name")
     parser.add_argument("--wandb_run_name", type=str, default=None, help="W&B run name (auto-generated if not set)")
+    parser.add_argument("--ms_cxr_csv", type=str, default=None, help="Path to MS-CXR CSV for phrase grounding eval")
+    parser.add_argument("--ms_cxr_image_root", type=str, default="/datasets/MIMIC-CXR", help="Root dir for MIMIC-CXR images")
     args = parser.parse_args()
 
     # 1. Setup
@@ -204,7 +207,18 @@ if __name__ == "__main__":
     vis_dir = os.path.join(args.output_dir, "visualizations")
     pairwise_metrics = evaluator.evaluate_pairwise_clustering(output_dir=vis_dir)
 
-    # E. UMAP Visualization (always run, single-label test samples)
+    # E. MS-CXR Phrase Grounding (if CSV provided)
+    grounding_metrics = {}
+    if args.ms_cxr_csv and os.path.exists(args.ms_cxr_csv):
+        grounding_metrics = evaluate_phrase_grounding(
+            model=model,
+            csv_path=args.ms_cxr_csv,
+            image_root=args.ms_cxr_image_root,
+            device=device,
+            use_amp=cfg.get('training', {}).get('use_amp', False),
+        )
+
+    # F. UMAP Visualization (always run, single-label test samples)
     umap_path = evaluator.generate_umap_visualization(output_dir=vis_dir)
 
     # F. Attention Visualizations (optional)
@@ -273,6 +287,7 @@ if __name__ == "__main__":
         **eff_metrics,
         **ret_metrics,
         **cls_metrics,
+        **grounding_metrics,
         "checkpoint": args.checkpoint,
         "config": args.config,
         "device": device,

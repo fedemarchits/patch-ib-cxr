@@ -41,7 +41,9 @@ python3 evaluate.py \
     --checkpoint "$OUTPUT_DIR/best_model.pt" \
     --output_dir "$OUTPUT_DIR" \
     --visualize \
-    --num_vis_samples 10
+    --num_vis_samples 10 \
+    --ms_cxr_csv "/datasets/ms-cxr/1.1.0/MS_CXR_Local_Alignment_v1.1.0.csv" \
+    --ms_cxr_image_root "/datasets/MIMIC-CXR"
 
 echo "=============================================="
 echo "  Done! Results saved to:"
