@@ -1,4 +1,4 @@
-experiment_name: "model_c_midfusion_filip"
+experiment_name: "model_c_threshold_midfusion_filip"
 
 data:
   json_path: "/workspace/mimic_master_official_split.jsonl"
@@ -12,12 +12,10 @@ model:
   vision_backbone: "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
   text_backbone: "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
 
-  # Patch-IB (Top-K masking)
+  # Patch-IB (Threshold masking — thesis Model C)
   use_masking: true
-  use_topk_masking: true
-  k_ratio: 0.25
-  k_ratio_start: 0.75
-  k_ratio_anneal_steps: 5000
+  use_topk_masking: false
+  mask_ratio: 0.25                    # Target sparsity: keep ~25% of patches
   sparsity_weight: 5.0
   sparsity_warmup_steps: 500
   consistency_weight: 1.0
@@ -27,7 +25,7 @@ model:
   mid_fusion_layers: [4, 8, 12]
   mid_fusion_n_heads: 4
   mid_fusion_loss_type: "filip"
-  mid_fusion_loss_weights: [0.01, 0.01, 0.01]
+  mid_fusion_loss_weights: [0.0, 0.01, 0.01]
   mid_fusion_loss_warmup_steps: 500
 
   # Contrastive weights
@@ -59,4 +57,4 @@ training:
 wandb:
   enable: true
   project: "Thesis-PatchIB"
-  run_name: "model-c-midfusion-filip"
+  run_name: "model-c-threshold-midfusion-filip"

@@ -1,0 +1,62 @@
+experiment_name: "model_d_topk_midfusion_filip"
+
+data:
+  json_path: "/workspace/mimic_master_official_split.jsonl"
+  image_root: "/datasets/MIMIC-CXR/files"
+  batch_size: 48
+  num_workers: 4
+  image_size: 224
+  text_sections: "findings_impression"
+
+model:
+  vision_backbone: "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
+  text_backbone: "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
+
+  # Patch-IB (Top-K masking)
+  use_masking: true
+  use_topk_masking: true
+  k_ratio: 0.25
+  k_ratio_start: 0.75
+  k_ratio_anneal_steps: 5000
+  sparsity_weight: 5.0
+  sparsity_warmup_steps: 500
+  consistency_weight: 1.0
+
+  # Mid-Fusion + FILIP (same as Model B)
+  use_mid_fusion: true
+  mid_fusion_layers: [4, 8, 12]
+  mid_fusion_n_heads: 4
+  mid_fusion_loss_type: "filip"
+  mid_fusion_loss_weights: [0.01, 0.01, 0.01]
+  mid_fusion_loss_warmup_steps: 500
+
+  # Contrastive weights
+  contrastive_mask_weight: 1.0
+  contrastive_full_weight: 1.0
+  use_local_alignment: false
+
+training:
+  early_stopping_metric: "combined"
+
+  combined_weights:
+    recall: 0.7
+    auc: 0.3
+
+  eval_auc_every: 1
+
+  epochs: 40
+  lr: 1.0e-5
+  weight_decay: 0.02
+  warmup_steps: 1000
+  early_stopping_patience: 6
+  print_freq: 50
+  device: "cuda"
+  use_amp: true
+  gradient_accumulation_steps: 4
+  freeze_backbone: false
+  llrd_factor: 0.85
+
+wandb:
+  enable: true
+  project: "Thesis-PatchIB"
+  run_name: "model-d-topk-midfusion-filip"
