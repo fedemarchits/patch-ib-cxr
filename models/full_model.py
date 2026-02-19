@@ -266,10 +266,31 @@ class ModelABaseline(nn.Module):
             txt_emb_ind = self.backbone.encode_text(text)
             txt_emb_ind = F.normalize(txt_emb_ind, p=2, dim=-1)
 
-            # Pack independent embeddings into img_emb_full slot
-            img_emb_full = (img_emb_ind, txt_emb_ind)
+            # 4. Patch-IB masking (Model C): override img_embedding with masked pool
+            if self.use_masking:
+                patch_tokens = vit_features[:, 1:, :]  # (B, 196, 768)
+                if self.use_topk_masking:
+                    mask, importance_logits, topk_indices = self.mask_head(patch_tokens)
+                else:
+                    mask, importance_logits = self.mask_head(patch_tokens)
 
-            # 4. Mid-fusion local loss (optional, from lockstep intermediates)
+                # Save fused CLS as reference for consistency loss
+                fused_full_emb = img_embedding  # already CLS → projected → normalized
+
+                # Masked embedding: pool selected patches → project → normalize
+                masked_patches = patch_tokens * mask.unsqueeze(-1)
+                mask_sum = mask.sum(dim=1, keepdim=True) + 1e-6
+                img_embedding_768 = masked_patches.sum(dim=1) / mask_sum
+                img_embedding = self._project_embedding(img_embedding_768)
+                img_embedding = F.normalize(img_embedding, p=2, dim=-1)
+
+                # 3-tuple signals Model C + mid-fusion to trainer
+                img_emb_full = (fused_full_emb, img_emb_ind, txt_emb_ind)
+            else:
+                # Standard Model B: 2-tuple
+                img_emb_full = (img_emb_ind, txt_emb_ind)
+
+            # 5. Mid-fusion local loss (optional, from lockstep intermediates)
             if self.use_mid_fusion_local_loss and mid_intermediates:
                 local_features = []
                 for k, (patches_768, tokens_768) in enumerate(mid_intermediates):

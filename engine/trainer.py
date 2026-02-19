@@ -89,7 +89,12 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
             loss_con_ind_raw = None
 
             if img_emb_full is not None:
-                if isinstance(img_emb_full, tuple):
+                if isinstance(img_emb_full, tuple) and len(img_emb_full) == 3:
+                    # Model C mid-fusion + masking: (fused_full, ind_img, ind_txt)
+                    fused_full_emb, ind_img, ind_txt = img_emb_full
+                    loss_con_ind_raw = contrastive_criterion(ind_img, ind_txt, model.logit_scale)
+                    loss = loss + loss_con_ind_raw * contrastive_full_weight
+                elif isinstance(img_emb_full, tuple):
                     # Mid-fusion: independent contrastive loss (for retrieval)
                     ind_img, ind_txt = img_emb_full
                     loss_con_ind_raw = contrastive_criterion(ind_img, ind_txt, model.logit_scale)
@@ -113,13 +118,22 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
                 loss_sparse = sparsity_criterion(logits) * sparsity_weight * sparsity_warmup_factor
                 loss = loss + loss_sparse
 
-            # Consistency loss (Patch-IB only, not mid-fusion)
+            # Consistency loss (Patch-IB: full vs masked)
             loss_consistency = None
-            if consistency_criterion is not None and img_emb_full is not None and not isinstance(img_emb_full, tuple):
-                loss_consistency = consistency_criterion(
-                    img_emb_full, img_emb, txt_emb, model.logit_scale
-                ) * consistency_weight
-                loss = loss + loss_consistency
+            if consistency_criterion is not None and img_emb_full is not None:
+                if isinstance(img_emb_full, tuple) and len(img_emb_full) == 3:
+                    # Model C mid-fusion + masking: fused_full_emb vs masked img_emb
+                    fused_full_emb = img_emb_full[0]
+                    loss_consistency = consistency_criterion(
+                        fused_full_emb, img_emb, txt_emb, model.logit_scale
+                    ) * consistency_weight
+                    loss = loss + loss_consistency
+                elif not isinstance(img_emb_full, tuple):
+                    # Standard Patch-IB (no mid-fusion)
+                    loss_consistency = consistency_criterion(
+                        img_emb_full, img_emb, txt_emb, model.logit_scale
+                    ) * consistency_weight
+                    loss = loss + loss_consistency
             # =========================================
 
             # Local alignment loss (if enabled)

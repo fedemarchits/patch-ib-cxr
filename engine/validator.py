@@ -261,7 +261,12 @@ def validate(model, dataloader, criterions, device, use_amp, compute_retrieval=F
                 loss = loss_con_raw
 
             # Independent contrastive loss (mid-fusion dual contrastive)
-            if isinstance(img_emb_full, tuple):
+            if isinstance(img_emb_full, tuple) and len(img_emb_full) == 3:
+                # Model C mid-fusion + masking: (fused_full, ind_img, ind_txt)
+                _, ind_img, ind_txt = img_emb_full
+                loss_con_ind = contrastive_criterion(ind_img, ind_txt, model.logit_scale)
+                loss = loss + loss_con_ind
+            elif isinstance(img_emb_full, tuple):
                 ind_img, ind_txt = img_emb_full
                 loss_con_ind = contrastive_criterion(ind_img, ind_txt, model.logit_scale)
                 loss = loss + loss_con_ind
@@ -314,9 +319,10 @@ def validate(model, dataloader, criterions, device, use_amp, compute_retrieval=F
 
         # Collect embeddings for retrieval
         if compute_retrieval:
-            if isinstance(img_emb_full, tuple):
-                # Mid-fusion: use independent embeddings (no cross-attn leakage)
-                ind_img, ind_txt = img_emb_full
+            if isinstance(img_emb_full, tuple) and len(img_emb_full) >= 2:
+                # Mid-fusion (2 or 3-tuple): use independent embeddings (no cross-attn leakage)
+                ind_img = img_emb_full[-2]
+                ind_txt = img_emb_full[-1]
                 all_img_emb.append(ind_img.float().cpu())
                 all_txt_emb.append(ind_txt.float().cpu())
             else:
