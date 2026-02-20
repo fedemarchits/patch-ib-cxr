@@ -54,6 +54,11 @@ class PatchMaskingHead(nn.Module):
             nn.Linear(input_dim // 4, 1) # Output: Logit for "Importance"
         )
         self.reduction_ratio = reduction_ratio
+        # Zero-init the final bias so logits start near 0 (~50% patches
+        # selected) regardless of random seed. Default kaiming_uniform_ can
+        # produce a strongly negative bias that drives all 196 logits below
+        # the STE threshold (0) and collapses the mask to zero at step 1.
+        nn.init.zeros_(self.predictor[2].bias)
 
     def forward(self, patch_embeddings):
         """
