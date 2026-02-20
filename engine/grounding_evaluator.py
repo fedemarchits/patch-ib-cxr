@@ -1,12 +1,25 @@
 """
 MS-CXR Phrase Grounding Evaluation.
 
-Evaluates whether the model's local alignment (FILIP or cross-attention)
-produces heatmaps that correctly localize radiological findings.
+Two evaluations:
+
+1. evaluate_phrase_grounding  (existing)
+   Uses FILIP cosine similarity between patch features and text token features
+   to produce a soft heatmap, evaluated with CNT and mIoU.
+
+2. evaluate_mask_grounding  (new — Models C and D)
+   Uses the HARD BINARY MASK produced by the masking head (STE threshold for
+   Model C, TopK for Model D) and checks whether selected patches overlap
+   with annotated pathology bounding boxes.  For mid-fusion models the mask
+   is text-conditioned (the MS-CXR phrase is passed through cross-attention),
+   so this tests text-guided patch selection without any soft heatmap.
 
 Metrics:
 - CNT (Pointing Game): Is the max activation inside the ground truth bbox?
 - mIoU: Mean IoU between thresholded heatmap and GT bbox mask.
+- Recall:    fraction of GT pathology patches that are selected by the mask.
+- Precision: fraction of selected patches that fall inside the GT region.
+- IoU:       hard-mask intersection / union with GT region.
 
 Reference: MS-CXR v1.1.0 (Boecking et al., PhysioNet)
 """
@@ -306,5 +319,181 @@ def evaluate_phrase_grounding(
 
         output[f"grounding/{layer_name}/overall_cnt"] = overall_cnt
         output[f"grounding/{layer_name}/overall_miou"] = overall_iou
+
+    return output
+
+
+def evaluate_mask_grounding(
+    model, csv_path, image_root, device,
+    use_amp=False, image_size=224, grid_size=14, split="test"
+):
+    """
+    Evaluate whether the hard patch mask (Model C STE / Model D TopK) selects
+    patches that overlap with pathology bounding boxes from MS-CXR.
+
+    For mid-fusion models the MS-CXR phrase is fed as text input, so the mask
+    is text-conditioned through cross-attention — we are testing whether the
+    bottleneck focuses on the right anatomical region given the finding phrase.
+
+    Metrics per pathology category (on the 14x14 patch grid):
+      recall    — fraction of GT pathology patches that the mask selects
+      precision — fraction of selected patches that lie inside the GT region
+      iou       — hard-mask intersection / union with GT region
+      kept_ratio — mean fraction of all patches selected (sparsity measure)
+
+    Args:
+        model:       trained ModelABaseline with use_masking=True
+        csv_path:    path to MS_CXR_Local_Alignment CSV
+        image_root:  root directory for MIMIC-CXR images
+        device:      torch device
+        use_amp:     whether to use AMP autocast
+        image_size:  model input resolution (224)
+        grid_size:   patch grid size (14 for ViT-B/16 @ 224px)
+        split:       'test', 'val', or 'train'
+
+    Returns:
+        dict of metric keys → float values, prefixed with 'mask_grounding/'
+    """
+    import open_clip
+
+    model.eval()
+    print(f"\n[Mask Grounding] Patch selection vs. MS-CXR bboxes ({split} split)...")
+
+    if not (hasattr(model, 'use_masking') and model.use_masking):
+        print("   >> Model does not use masking, skipping mask grounding eval")
+        return {}
+
+    samples = load_ms_cxr_annotations(csv_path, split=split)
+    if len(samples) == 0:
+        print("   >> No samples found!")
+        return {}
+
+    tokenizer = open_clip.get_tokenizer(
+        "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
+    )
+    transform = transforms.Compose([
+        transforms.Resize((image_size, image_size)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
+
+    is_topk = hasattr(model, 'use_topk_masking') and model.use_topk_masking
+    mask_type = "TopK" if is_topk else "STE-threshold"
+    n_patches = grid_size * grid_size  # 196
+
+    print(f"   >> Mask type: {mask_type}")
+    if is_topk:
+        k_ratio = model.mask_head._current_k_ratio
+        K = max(1, int(n_patches * k_ratio))
+        print(f"   >> k_ratio={k_ratio:.3f}, K={K}/{n_patches} patches selected")
+
+    per_category = defaultdict(lambda: {"recall": [], "precision": [], "iou": [], "kept_ratio": []})
+    skipped = 0
+
+    with torch.no_grad():
+        for sample in tqdm(samples, desc="Mask Grounding"):
+            img_path = os.path.join(image_root, sample["path"])
+            if not os.path.exists(img_path):
+                skipped += 1
+                continue
+
+            try:
+                img = Image.open(img_path).convert("RGB")
+            except Exception:
+                skipped += 1
+                continue
+
+            img_tensor = transform(img).unsqueeze(0).to(device)
+            # Use the MS-CXR phrase as text: in mid-fusion models this
+            # conditions the mask via cross-attention at layers 4, 8, 12.
+            text_tokens = tokenizer(sample["label_text"]).to(device)
+
+            with torch.amp.autocast(device_type=str(device), enabled=use_amp):
+                _, _, importance_logits, _, _ = model(img_tensor, text_tokens)
+
+            if importance_logits is None:
+                skipped += 1
+                continue
+
+            logits = importance_logits[0].cpu().float()  # (N_patches,)
+            N = logits.shape[0]
+
+            # Build binary mask using the same logic as the forward pass
+            if is_topk:
+                K_now = max(1, int(N * model.mask_head._current_k_ratio))
+                _, topk_idx = torch.topk(logits, K_now)
+                binary_mask = torch.zeros(N)
+                binary_mask[topk_idx] = 1.0
+            else:
+                binary_mask = (logits > 0).float()  # STE threshold at 0
+
+            pred_mask = binary_mask.reshape(grid_size, grid_size).numpy()
+
+            gt_mask = _bbox_to_mask(
+                sample["bboxes"],
+                sample["image_width"], sample["image_height"],
+                grid_size=grid_size,
+            )
+
+            if gt_mask.sum() == 0:
+                skipped += 1
+                continue
+
+            intersection = (pred_mask * gt_mask).sum()
+            union = ((pred_mask + gt_mask) > 0).sum()
+            gt_sum = gt_mask.sum()
+            pred_sum = pred_mask.sum()
+
+            recall    = float(intersection / (gt_sum + 1e-8))
+            precision = float(intersection / (pred_sum + 1e-8)) if pred_sum > 0 else 0.0
+            iou       = float(intersection / (union + 1e-8))    if union > 0  else 0.0
+            kept_ratio = float(pred_sum / N)
+
+            cat = sample["category_name"]
+            per_category[cat]["recall"].append(recall)
+            per_category[cat]["precision"].append(precision)
+            per_category[cat]["iou"].append(iou)
+            per_category[cat]["kept_ratio"].append(kept_ratio)
+
+    if skipped > 0:
+        print(f"   >> Skipped {skipped} samples (missing files or empty GT)")
+
+    output = {}
+    all_recall, all_prec, all_iou = [], [], []
+
+    print(f"\n   >> Mask Grounding Results ({mask_type}):")
+    header = f"      {'Category':30s} {'Recall':>8s} {'Precision':>10s} {'IoU':>8s} {'Kept%':>7s} {'N':>5s}"
+    print(header)
+    print(f"      {'-'*len(header)}")
+
+    for cat in sorted(per_category.keys()):
+        r = per_category[cat]
+        recall_m    = float(np.mean(r["recall"]))
+        precision_m = float(np.mean(r["precision"]))
+        iou_m       = float(np.mean(r["iou"]))
+        kept_m      = float(np.mean(r["kept_ratio"]))
+        n = len(r["recall"])
+
+        all_recall.extend(r["recall"])
+        all_prec.extend(r["precision"])
+        all_iou.extend(r["iou"])
+
+        print(f"      {cat:30s} {recall_m:8.3f} {precision_m:10.3f} {iou_m:8.3f} {kept_m*100:6.1f}% {n:5d}")
+
+        output[f"mask_grounding/{cat}/recall"]     = recall_m
+        output[f"mask_grounding/{cat}/precision"]  = precision_m
+        output[f"mask_grounding/{cat}/iou"]        = iou_m
+        output[f"mask_grounding/{cat}/kept_ratio"] = kept_m
+
+    overall_recall = float(np.mean(all_recall)) if all_recall else 0.0
+    overall_prec   = float(np.mean(all_prec))   if all_prec   else 0.0
+    overall_iou    = float(np.mean(all_iou))     if all_iou    else 0.0
+
+    print(f"      {'-'*len(header)}")
+    print(f"      {'OVERALL':30s} {overall_recall:8.3f} {overall_prec:10.3f} {overall_iou:8.3f}")
+
+    output["mask_grounding/overall_recall"]    = overall_recall
+    output["mask_grounding/overall_precision"] = overall_prec
+    output["mask_grounding/overall_iou"]       = overall_iou
 
     return output

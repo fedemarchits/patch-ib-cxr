@@ -14,7 +14,7 @@ from engine.visualizer import (
     visualize_mid_fusion_attention, visualize_mid_fusion_token_attention,
     visualize_filip_alignment
 )
-from engine.grounding_evaluator import evaluate_phrase_grounding
+from engine.grounding_evaluator import evaluate_phrase_grounding, evaluate_mask_grounding
 
 # Try to import wandb (optional)
 try:
@@ -210,13 +210,26 @@ if __name__ == "__main__":
     # E. MS-CXR Phrase Grounding (if CSV provided)
     grounding_metrics = {}
     if args.ms_cxr_csv and os.path.exists(args.ms_cxr_csv):
+        use_amp = cfg.get('training', {}).get('use_amp', False)
+
+        # E1. FILIP soft heatmap grounding (Models B/C/D with mid-fusion)
         grounding_metrics = evaluate_phrase_grounding(
             model=model,
             csv_path=args.ms_cxr_csv,
             image_root=args.ms_cxr_image_root,
             device=device,
-            use_amp=cfg.get('training', {}).get('use_amp', False),
+            use_amp=use_amp,
         )
+
+        # E2. Hard mask grounding (Models C and D with masking head)
+        mask_grounding_metrics = evaluate_mask_grounding(
+            model=model,
+            csv_path=args.ms_cxr_csv,
+            image_root=args.ms_cxr_image_root,
+            device=device,
+            use_amp=use_amp,
+        )
+        grounding_metrics.update(mask_grounding_metrics)
 
     # F. UMAP Visualization (always run, single-label test samples)
     umap_path = evaluator.generate_umap_visualization(output_dir=vis_dir)
