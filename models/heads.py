@@ -54,26 +54,23 @@ class PatchMaskingHead(nn.Module):
             nn.Linear(input_dim // 4, 1) # Output: Logit for "Importance"
         )
         self.reduction_ratio = reduction_ratio
-        # Zero-init the final bias so logits start near 0 (~50% patches
-        # selected) regardless of random seed. Default kaiming_uniform_ can
-        # produce a strongly negative bias that drives all 196 logits below
-        # the STE threshold (0) and collapses the mask to zero at step 1.
+        # Zero-init the final bias: removes the random kaiming bias that can
+        # collapse all logits below the STE threshold at step 1.
         nn.init.zeros_(self.predictor[2].bias)
+        # Learnable global offset: shifts ALL patch logits uniformly.
+        # Initialized to 0; SparsityLoss converges it quickly to whatever
+        # global shift brings kept_ratio → target_ratio, compensating for
+        # the systematic negative skew from pretrained ViT feature structure.
+        self.logit_offset = nn.Parameter(torch.zeros(1))
 
     def forward(self, patch_embeddings):
         """
         Args:
             patch_embeddings: (B, N_patches, Dim) - EXCLUDING CLS token usually
         """
-        # Predict importance logits
-        logits = self.predictor(patch_embeddings).squeeze(-1) # (B, N)
-        
-        # Option A: Dynamic Keep based on ratio (Top-K)
-        # Option B: Learned Threshold with STE (Simpler for "Bottleneck")
-        
-        # Here we use a simple STE on the logits for binary masking
-        # In a real IB, you might penalize the number of 1s.
-        
+        # Predict per-patch importance logits + global offset
+        logits = self.predictor(patch_embeddings).squeeze(-1) + self.logit_offset  # (B, N)
+
         mask = StraightThroughEstimator.apply(logits)
 
         # Alternatively: Gumbel Softmax for differentiable sampling
