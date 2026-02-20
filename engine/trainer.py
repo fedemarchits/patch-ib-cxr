@@ -303,11 +303,15 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
                     mask_probs = torch.sigmoid(logits)
                     # Mean activation (average probability of keeping a patch)
                     mean_activation = mask_probs.mean().item()
-                    # Sparsity ratio (% of patches with prob > 0.5, i.e., "kept")
-                    hard_mask = (logits > 0).float()
-                    patches_kept_ratio = hard_mask.mean().item()
-                    # Number of patches kept per image (out of 196)
-                    patches_kept_per_image = hard_mask.sum(dim=1).mean().item()
+                    # Sparsity ratio: for TopK use exact k_ratio, for STE use hard threshold
+                    if hasattr(model, 'mask_head') and hasattr(model.mask_head, '_current_k_ratio'):
+                        # TopK: actual kept ratio is always exactly k_ratio_current
+                        patches_kept_ratio = model.mask_head._current_k_ratio
+                        patches_kept_per_image = patches_kept_ratio * logits.shape[1]
+                    else:
+                        hard_mask = (logits > 0).float()
+                        patches_kept_ratio = hard_mask.mean().item()
+                        patches_kept_per_image = hard_mask.sum(dim=1).mean().item()
 
                     log_dict["mask/mean_activation"] = mean_activation
                     log_dict["mask/patches_kept_ratio"] = patches_kept_ratio

@@ -44,11 +44,14 @@ class SparsityLoss(nn.Module):
         self.target_ratio = target_ratio
 
     def forward(self, importance_logits):
-        # Sigmoid to approximate the binary decision for loss calculation
+        # Use STE trick: forward uses hard kept ratio (consistent with STE selection),
+        # backward uses sigmoid gradient (differentiable proxy).
+        # This makes the loss zero when exactly target_ratio% of logits are > 0,
+        # which is consistent with what StraightThroughEstimator does in the forward pass.
         probs = torch.sigmoid(importance_logits)
-        mean_activation = probs.mean()
-        # L2 penalty towards target ratio
-        return (mean_activation - self.target_ratio) ** 2
+        hard_ratio = (importance_logits > 0).float()
+        kept_ratio = hard_ratio.detach() + probs - probs.detach()
+        return (kept_ratio.mean() - self.target_ratio) ** 2
 
 
 class LocalAlignmentLoss(nn.Module):
