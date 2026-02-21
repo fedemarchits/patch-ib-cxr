@@ -15,7 +15,7 @@ model:
   # Patch-IB (Top-K masking)
   use_masking: true
   use_topk_masking: true
-  k_ratio: 0.25
+  k_ratio: 0.4
   k_ratio_start: 0.75
   k_ratio_anneal_steps: 5000
   sparsity_weight: 5.0
@@ -27,11 +27,14 @@ model:
   mid_fusion_layers: [4, 8, 12]
   mid_fusion_n_heads: 4
   mid_fusion_loss_type: "filip"
-  mid_fusion_loss_weights: [0.01, 0.01, 0.01]
+  # Layer 0 (ViT layer 4) never converges — shallow features too low-level for token alignment.
+  # Layers 1 and 2 (ViT layers 8, 12) are semantically meaningful.
+  mid_fusion_loss_weights: [0.0, 0.5, 0.5]
   mid_fusion_loss_warmup_steps: 500
 
-  # Contrastive weights
-  contrastive_mask_weight: 1.0
+  # Fused contrastive collapses to ~0 after step ~1000 (mid-fusion makes pairs trivially similar).
+  # Set to 0: removes a useless loss term. Independent contrastive drives all retrieval learning.
+  contrastive_mask_weight: 0.0
   contrastive_full_weight: 1.0
   use_local_alignment: false
 
@@ -59,4 +62,4 @@ training:
 wandb:
   enable: true
   project: "Thesis-PatchIB"
-  run_name: "model-d-topk-midfusion-filip"
+  run_name: "model-d-topk-v2-k40-filip05"

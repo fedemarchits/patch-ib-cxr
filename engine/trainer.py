@@ -377,10 +377,14 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
                     weighted_local = effective_local_weight * loss_local.item()
                     log_dict["train/local_alignment_loss_weighted"] = weighted_local
 
-                    contrastive_val = loss_con_raw.item()
-                    log_dict["loss_balance/contrastive_vs_local_ratio"] = contrastive_val / (weighted_local + 1e-8)
-                    log_dict["loss_balance/local_contribution_pct"] = 100 * weighted_local / (contrastive_val + weighted_local + 1e-8)
-                    log_dict["loss_balance/contrastive_contribution_pct"] = 100 * contrastive_val / (contrastive_val + weighted_local + 1e-8)
+                    # Use independent contrastive as denominator (fused collapses to ~0
+                    # due to mid-fusion cross-attention, making loss_con_raw a misleading baseline).
+                    # Independent contrastive is the actual retrieval-relevant training signal.
+                    ind_contrastive_val = loss_con_ind_raw.item() if loss_con_ind_raw is not None else loss_con_raw.item()
+                    log_dict["loss_balance/fused_contrastive_raw"] = loss_con_raw.item()
+                    log_dict["loss_balance/contrastive_vs_filip_ratio"] = ind_contrastive_val / (weighted_local + 1e-8)
+                    log_dict["loss_balance/filip_contribution_pct"] = 100 * weighted_local / (ind_contrastive_val + weighted_local + 1e-8)
+                    log_dict["loss_balance/contrastive_contribution_pct"] = 100 * ind_contrastive_val / (ind_contrastive_val + weighted_local + 1e-8)
                     log_dict["train/local_weight_current"] = effective_local_weight
 
             # Gradient norm logging

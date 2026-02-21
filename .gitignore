@@ -38,3 +38,10 @@ logs/
 # WandB local files
 wandb/
 .wandb/
+
+
+# Thesis pdf
+thesisPdf/
+
+# Claude help
+CLAUDE.md
