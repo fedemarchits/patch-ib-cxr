@@ -42,6 +42,15 @@ model:
   use_local_alignment: false
 
 training:
+  # Staged training: freeze backbone for first epoch, then unfreeze.
+  # Phase 1: only masking head + mid-fusion modules train (high LR, no backbone gradient).
+  #           Prevents randomly initialized modules from corrupting pretrained BiomedCLIP
+  #           features before they have a chance to stabilize.
+  # Phase 2: full fine-tuning with LLRD.
+  staged_training: true
+  warmup_epochs: 1
+  warmup_lr: 1.0e-4
+
   early_stopping_metric: "combined"
 
   combined_weights:
