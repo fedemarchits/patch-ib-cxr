@@ -39,6 +39,14 @@ model:
   use_local_alignment: false
 
 training:
+  # Staged training: freeze backbone for first epoch, then unfreeze.
+  # Less critical than Model C (Top-K has no gradient conflict), but mid-fusion
+  # modules are randomly initialized and FILIP weights are 50x higher than before.
+  # One epoch of stable backbone features lets mid-fusion bootstrap safely.
+  staged_training: true
+  warmup_epochs: 1
+  warmup_lr: 1.0e-4
+
   early_stopping_metric: "combined"
 
   combined_weights:
