@@ -334,6 +334,16 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
                     if k_ratio_start is not None:
                         log_dict["mask/k_ratio_current"] = current_k_ratio
 
+                    # Logit distribution — key diagnostic for patch selection quality.
+                    # logit_std: std of importance logits across patches within each image,
+                    #   then averaged over the batch. If the MLP is learning meaningful patch
+                    #   ordering, this should INCREASE over training as the model becomes more
+                    #   confident about which patches matter. Near-zero std = random selection.
+                    # logit_mean: should track toward 0 (or slightly negative for target_ratio<0.5)
+                    #   as logit_offset adjusts the global bias.
+                    log_dict["mask/logit_std"] = logits.std(dim=1).mean().item()
+                    log_dict["mask/logit_mean"] = logits.mean().item()
+
             # Patch-IB specific logging
             if loss_con_full_raw is not None:
                 log_dict["train/contrastive_full_loss_raw"] = loss_con_full_raw.item()
