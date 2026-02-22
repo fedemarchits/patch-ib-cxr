@@ -2,6 +2,39 @@ import torch
 import torch.nn as nn
 
 
+def gumbel_sigmoid_sample(logits, tau=1.0):
+    """
+    Gumbel-Sigmoid straight-through estimator for binary patch selection.
+
+    Compared to plain STE (identity backward):
+    - Adds Gumbel noise for exploration (patches near boundary get a chance to flip)
+    - Backward gradient is σ(1-σ)/τ — bounded, never causes gradient explosion
+    - Gradient naturally attenuates for patches far from the decision boundary
+      (high-confidence keep/drop get small gradient; uncertain patches get large gradient)
+    - As τ → 0: approaches deterministic STE behavior
+    - As τ → ∞: very soft, uniform gradient across all patches
+
+    Args:
+        logits: (B, N) patch importance logits
+        tau: temperature scalar, annealed from tau_start → tau_end during training
+
+    Returns:
+        mask: (B, N) float, hard binary in forward / soft Gumbel-sigmoid in backward
+    """
+    # Gumbel noise via inverse CDF: -log(-log(U)), U ~ Uniform(0, 1)
+    u = torch.zeros_like(logits).uniform_().clamp(1e-5, 1 - 1e-5)
+    gumbel = -torch.log(-torch.log(u))
+
+    # Soft mask: σ((logit + gumbel) / τ) — differentiable w.r.t. logits via autograd
+    soft = torch.sigmoid((logits + gumbel) / tau)
+
+    # Hard mask: threshold at 0.5 (equivalent to: perturbed logit > 0)
+    hard = (soft > 0.5).float()
+
+    # STE trick: hard forward, soft gradient in backward (no custom autograd needed)
+    return hard - soft.detach() + soft
+
+
 class StraightThroughEstimator(torch.autograd.Function):
     """
     Passes binary mask forward, passes gradient back to the logits unchanged.
@@ -45,7 +78,7 @@ class TopKStraightThrough(torch.autograd.Function):
         return grad_output, None  # None for k (not differentiable)
 
 class PatchMaskingHead(nn.Module):
-    def __init__(self, input_dim, reduction_ratio=0.5):
+    def __init__(self, input_dim, reduction_ratio=0.5, use_gumbel=False, tau_start=1.0):
         super().__init__()
         # Simple MLP to predict "keep" importance score for each patch
         self.predictor = nn.Sequential(
@@ -63,6 +96,14 @@ class PatchMaskingHead(nn.Module):
         # the systematic negative skew from pretrained ViT feature structure.
         self.logit_offset = nn.Parameter(torch.zeros(1))
 
+        # Gumbel-Sigmoid mode (replaces plain STE)
+        self.use_gumbel = use_gumbel
+        self._tau = tau_start  # Mutable temperature — annealed by trainer
+
+    def set_tau(self, tau):
+        """Update Gumbel temperature (called by trainer for annealing)."""
+        self._tau = tau
+
     def forward(self, patch_embeddings):
         """
         Args:
@@ -71,10 +112,12 @@ class PatchMaskingHead(nn.Module):
         # Predict per-patch importance logits + global offset
         logits = self.predictor(patch_embeddings).squeeze(-1) + self.logit_offset  # (B, N)
 
-        mask = StraightThroughEstimator.apply(logits)
-
-        # Alternatively: Gumbel Softmax for differentiable sampling
-        # mask = F.gumbel_softmax(logits, hard=True)
+        if self.use_gumbel:
+            # Gumbel-Sigmoid: bounded backward gradient, exploration via noise
+            mask = gumbel_sigmoid_sample(logits, tau=self._tau)
+        else:
+            # Plain STE: identity backward (can cause gradient explosions with high FILIP weights)
+            mask = StraightThroughEstimator.apply(logits)
 
         return mask, logits
 

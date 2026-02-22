@@ -12,20 +12,28 @@ model:
   vision_backbone: "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
   text_backbone: "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
 
-  # Patch-IB (Threshold masking — thesis Model C)
+  # Patch-IB (Threshold masking — thesis Model C, Gumbel-Sigmoid)
   use_masking: true
   use_topk_masking: false
-  mask_ratio: 0.25                    # Target sparsity: keep ~25% of patches
+  mask_ratio: 0.4
   sparsity_weight: 5.0
   sparsity_warmup_steps: 500
   consistency_weight: 1.0
+
+  # Gumbel-Sigmoid replaces plain STE — bounded backward gradient prevents
+  # the gradient explosions caused by high FILIP weights through STE identity backward.
+  # Temperature annealed 1.0 → 0.1: starts soft (safe, exploratory) → hardens (more deterministic).
+  use_gumbel: true
+  gumbel_tau_start: 1.0
+  gumbel_tau_end: 0.1
+  gumbel_tau_anneal_steps: 5000
 
   # Mid-Fusion + FILIP (same as Model B)
   use_mid_fusion: true
   mid_fusion_layers: [4, 8, 12]
   mid_fusion_n_heads: 4
   mid_fusion_loss_type: "filip"
-  mid_fusion_loss_weights: [0.0, 0.01, 0.01]
+  mid_fusion_loss_weights: [0.0, 0.05, 0.1]
   mid_fusion_loss_warmup_steps: 500
 
   # Contrastive weights
@@ -57,4 +65,4 @@ training:
 wandb:
   enable: true
   project: "Thesis-PatchIB"
-  run_name: "model-c-threshold-midfusion-filip"
+  run_name: "model-c-gumbel-midfusion-filip"

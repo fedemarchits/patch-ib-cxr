@@ -36,6 +36,11 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
     k_ratio_end = criterion.get('k_ratio_end', None)
     k_ratio_anneal_steps = criterion.get('k_ratio_anneal_steps', 0)
 
+    # Gumbel temperature annealing (Model C with Gumbel-Sigmoid)
+    gumbel_tau_start = criterion.get('gumbel_tau_start', None)
+    gumbel_tau_end = criterion.get('gumbel_tau_end', 0.1)
+    gumbel_tau_anneal_steps = criterion.get('gumbel_tau_anneal_steps', 0)
+
     loop = tqdm(dataloader, desc=f"Epoch {epoch}")
 
     for batch_idx, batch in enumerate(loop):
@@ -53,6 +58,15 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
         # Only zero gradients at the start of accumulation cycle
         if batch_idx % accumulation_steps == 0:
             optimizer.zero_grad()
+
+        # Anneal Gumbel temperature for Model C (Gumbel-Sigmoid masking)
+        if gumbel_tau_start is not None and hasattr(model, 'mask_head') and hasattr(model.mask_head, 'set_tau'):
+            if gumbel_tau_anneal_steps > 0:
+                progress = min(1.0, global_step / gumbel_tau_anneal_steps)
+            else:
+                progress = 1.0
+            current_tau = gumbel_tau_start + (gumbel_tau_end - gumbel_tau_start) * progress
+            model.mask_head.set_tau(current_tau)
 
         # Anneal k_ratio for Top-K masking (Model D)
         if k_ratio_start is not None and hasattr(model, 'mask_head') and hasattr(model.mask_head, 'set_k_ratio'):

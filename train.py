@@ -188,6 +188,13 @@ def main():
                 criterions['k_ratio_anneal_steps'] = cfg['model'].get('k_ratio_anneal_steps', 2000)
                 print(f"Top-K annealing: {criterions['k_ratio_start']:.2f} -> {criterions['k_ratio_end']:.2f} over {criterions['k_ratio_anneal_steps']} steps")
 
+            # Gumbel temperature annealing (Model C with Gumbel-Sigmoid)
+            if cfg['model'].get('use_gumbel', False) and 'gumbel_tau_start' in cfg['model']:
+                criterions['gumbel_tau_start'] = cfg['model']['gumbel_tau_start']
+                criterions['gumbel_tau_end'] = cfg['model'].get('gumbel_tau_end', 0.1)
+                criterions['gumbel_tau_anneal_steps'] = cfg['model'].get('gumbel_tau_anneal_steps', 5000)
+                print(f"Gumbel tau annealing: {criterions['gumbel_tau_start']:.2f} -> {criterions['gumbel_tau_end']:.2f} over {criterions['gumbel_tau_anneal_steps']} steps")
+
         # GradScaler for mixed precision
         scaler = torch.amp.GradScaler(device, enabled=use_amp)
 

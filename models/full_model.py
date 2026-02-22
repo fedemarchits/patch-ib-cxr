@@ -78,8 +78,12 @@ class ModelABaseline(nn.Module):
                 # Model D: Top-K patch selection
                 self.mask_head = MaskHeadTopK(self.embed_dim, k_ratio=self.k_ratio)
             else:
-                # Model C: Threshold-based masking
-                self.mask_head = PatchMaskingHead(self.embed_dim)
+                # Model C: Threshold-based masking (STE or Gumbel-Sigmoid)
+                use_gumbel = cfg['model'].get('use_gumbel', False)
+                tau_start = cfg['model'].get('gumbel_tau_start', 1.0)
+                self.mask_head = PatchMaskingHead(
+                    self.embed_dim, use_gumbel=use_gumbel, tau_start=tau_start
+                )
 
         # Projection layers for local alignment (768 -> 512)
         if self.use_local_alignment:
