@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from .backbone import BiomedCLIPBackbone
-from .heads import PatchMaskingHead, MaskHeadTopK
+from .heads import PatchMaskingHead, MaskHeadTopK, PatchScorerMLP, TopKStraightThrough
 from .cross_attention import BidirectionalCrossAttention
 
 
@@ -384,6 +384,167 @@ class ModelABaseline(nn.Module):
         img_emb = F.normalize(img_emb, p=2, dim=-1)
 
         # Text: backbone encode -> normalize
+        txt_emb = self.backbone.encode_text(text)
+        txt_emb = F.normalize(txt_emb, p=2, dim=-1)
+
+        return img_emb, txt_emb
+
+
+class ModelE(nn.Module):
+    """
+    Model E: Intra-ViT Patch Dropping.
+
+    Patches are scored by a lightweight MLP at an intermediate ViT layer
+    (default: layer 6 of 12) and the lowest-scoring patches are dropped.
+    The CLS token and K selected patches continue through the upper ViT layers.
+
+    Key advantage over Model C/D:
+    - No train/inference mismatch: encode_independent uses the SAME mid-drop forward.
+    - Single contrastive loss on the final CLS token — no competing gradients.
+    - The CLS token is shaped by only the semantically important patches.
+
+    Gradient to scorer: TopKStraightThrough STE applied to patch features
+    before gathering ensures the scorer MLP receives gradients from the
+    contrastive loss even though Top-K selection is non-differentiable.
+    """
+
+    def __init__(self, cfg):
+        super().__init__()
+        self.backbone = BiomedCLIPBackbone(
+            model_name=cfg['model']['vision_backbone'],
+            device=cfg['training']['device']
+        )
+        self.embed_dim = 768
+        self.proj_dim = 512
+
+        self.drop_layer = cfg['model'].get('drop_layer', 6)
+
+        # Lightweight MLP scorer applied at intermediate ViT layer
+        k_ratio = cfg['model'].get('k_ratio', 0.5)
+        self.scorer = PatchScorerMLP(self.embed_dim, k_ratio=k_ratio)
+
+        # Optional FILIP local loss on selected patches (post upper-block processing)
+        self.use_filip_local = cfg['model'].get('use_filip_local', False)
+        if self.use_filip_local:
+            self.patch_proj = nn.Linear(self.embed_dim, self.proj_dim)
+            self.token_proj = nn.Linear(self.embed_dim, self.proj_dim)
+
+        self.logit_scale = self.backbone.clip_model.logit_scale
+
+    def _project_embedding(self, embedding):
+        visual_model = self.backbone.clip_model.visual
+        if hasattr(visual_model, 'proj') and visual_model.proj is not None:
+            return embedding @ visual_model.proj.to(embedding.dtype)
+        elif hasattr(visual_model, 'head') and visual_model.head is not None:
+            return visual_model.head(embedding)
+        else:
+            raise AttributeError("Cannot project 768->512. Check model architecture.")
+
+    def _forward_with_mid_drop(self, images):
+        """
+        Layer-by-layer ViT forward with patch dropping at self.drop_layer.
+
+        Phase 1: All 197 tokens (CLS + 196 patches) through blocks 0..drop_layer-1.
+        Scoring: PatchScorerMLP assigns importance to each of the 196 patch tokens.
+        Drop:    Top-K patches kept; rest discarded. Sequence becomes K+1 tokens.
+        Phase 2: CLS + K selected patches through blocks drop_layer..11.
+
+        STE trick (training only): TopKStraightThrough multiplied into patch features
+        before gathering so the scorer receives gradients from the contrastive loss.
+
+        Returns:
+            features:          (B, K+1, D) — final normed ViT features, reduced sequence
+            topk_indices:      (B, K)      — which patch positions were kept
+            importance_logits: (B, 196)    — raw scorer output (for sparsity loss + logging)
+        """
+        vit_trunk = self.backbone.clip_model.visual.trunk
+
+        # ViT embedding (identical to _forward_mid_fusion in ModelABaseline)
+        x = vit_trunk.patch_embed(images)
+        x = vit_trunk._pos_embed(x)
+        x = vit_trunk.patch_drop(x)
+        x = vit_trunk.norm_pre(x)
+
+        # Phase 1: full sequence through first drop_layer blocks
+        for i in range(self.drop_layer):
+            x = vit_trunk.blocks[i](x)
+
+        # Score intermediate patch features (exclude CLS at index 0)
+        patch_features = x[:, 1:, :]          # (B, 196, D)
+        importance_logits = self.scorer(patch_features)  # (B, 196)
+        N, D = patch_features.shape[1], patch_features.shape[2]
+        k = self.scorer.get_k(N)
+
+        if self.training:
+            # STE: TopKStraightThrough gives a binary mask with gradients flowing
+            # back to importance_logits → scorer MLP via the identity backward.
+            mask_ste = TopKStraightThrough.apply(importance_logits, k)  # (B, N)
+            patch_features_for_select = patch_features * mask_ste.unsqueeze(-1)
+        else:
+            # No gradient needed at eval time — use raw patch features directly.
+            patch_features_for_select = patch_features
+
+        # Top-K indices for actual sequence reduction
+        _, topk_idx = torch.topk(importance_logits, k, dim=1)
+        topk_idx_sorted = topk_idx.sort(dim=1).values  # (B, K) sorted for stability
+
+        # Gather K selected patches (at TopK positions, mask_ste=1 so values unchanged)
+        selected = patch_features_for_select.gather(
+            1, topk_idx_sorted.unsqueeze(-1).expand(-1, -1, D)
+        )
+
+        # Reduced sequence: CLS token + K selected patches
+        x = torch.cat([x[:, :1, :], selected], dim=1)  # (B, K+1, D)
+
+        # Phase 2: remaining blocks on reduced sequence
+        for i in range(self.drop_layer, len(vit_trunk.blocks)):
+            x = vit_trunk.blocks[i](x)
+
+        x = vit_trunk.norm(x)
+
+        return x, topk_idx_sorted, importance_logits
+
+    def forward(self, images, text):
+        local_features = None
+
+        # Image: intra-ViT dropping forward
+        vit_features, topk_indices, importance_logits = self._forward_with_mid_drop(images)
+
+        # CLS token from reduced sequence (attended only to selected patches)
+        cls_token = vit_features[:, 0, :]
+        img_emb = self._project_embedding(cls_token)
+        img_emb = F.normalize(img_emb, p=2, dim=-1)
+
+        # Text: standard independent encoding
+        txt_emb = self.backbone.encode_text(text)
+        txt_emb = F.normalize(txt_emb, p=2, dim=-1)
+
+        # Optional FILIP local loss on selected patches after upper-block processing.
+        # vit_features[:, 1:, :] are the K patches refined by blocks drop_layer..11.
+        if self.use_filip_local:
+            selected_patch_feats = vit_features[:, 1:, :]  # (B, K, D)
+            token_embeddings, attention_mask = self.backbone.encode_text_tokens(text)
+
+            patch_f = F.normalize(self.patch_proj(selected_patch_feats), dim=-1)
+            token_f = F.normalize(self.token_proj(token_embeddings), dim=-1)
+            # Return as single-element list to use mid-fusion FILIP path in trainer
+            local_features = [(patch_f, token_f, attention_mask)]
+
+        # img_emb_full=None: no dual-path, no consistency loss, no competing gradients
+        return img_emb, txt_emb, importance_logits, local_features, None
+
+    @torch.no_grad()
+    def encode_independent(self, images, text):
+        """
+        Evaluation encoding — uses the SAME mid-drop forward as training.
+        No train/inference mismatch: CLS is computed on the same K selected patches.
+        """
+        vit_features, _, _ = self._forward_with_mid_drop(images)
+
+        cls_token = vit_features[:, 0, :]
+        img_emb = self._project_embedding(cls_token)
+        img_emb = F.normalize(img_emb, p=2, dim=-1)
+
         txt_emb = self.backbone.encode_text(text)
         txt_emb = F.normalize(txt_emb, p=2, dim=-1)
 

@@ -68,14 +68,17 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
             current_tau = gumbel_tau_start + (gumbel_tau_end - gumbel_tau_start) * progress
             model.mask_head.set_tau(current_tau)
 
-        # Anneal k_ratio for Top-K masking (Model D)
-        if k_ratio_start is not None and hasattr(model, 'mask_head') and hasattr(model.mask_head, 'set_k_ratio'):
+        # Anneal k_ratio for Top-K masking (Model D) or intra-ViT scorer (Model E)
+        if k_ratio_start is not None:
             if k_ratio_anneal_steps > 0:
                 progress = min(1.0, global_step / k_ratio_anneal_steps)
             else:
                 progress = 1.0
             current_k_ratio = k_ratio_start + (k_ratio_end - k_ratio_start) * progress
-            model.mask_head.set_k_ratio(current_k_ratio)
+            if hasattr(model, 'mask_head') and hasattr(model.mask_head, 'set_k_ratio'):
+                model.mask_head.set_k_ratio(current_k_ratio)
+            elif hasattr(model, 'scorer') and hasattr(model.scorer, 'set_k_ratio'):
+                model.scorer.set_k_ratio(current_k_ratio)
 
         with torch.amp.autocast(device_type=device, enabled=use_amp):
             # Model returns 5 values: img_emb (masked if use_masking), txt_emb, logits, local_features, img_emb_full

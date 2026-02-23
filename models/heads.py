@@ -207,3 +207,40 @@ class MaskHeadTopK(nn.Module):
         selected_patches = torch.gather(patch_embeddings, dim=1, index=indices_expanded)
 
         return selected_patches
+
+
+class PatchScorerMLP(nn.Module):
+    """
+    Model E: Lightweight MLP that scores patch importance for intra-ViT dropping.
+
+    Applied to intermediate patch features (after drop_layer blocks).
+    Returns only importance logits — actual sequence reduction is handled
+    by the model's forward pass via index-based gathering.
+
+    Unlike MaskHeadTopK (which produces a binary mask for weighted pooling),
+    this scorer is used to reduce the ViT sequence length: the CLS token
+    at inference is computed only from the K selected patches.
+    """
+    def __init__(self, input_dim, k_ratio=0.5):
+        super().__init__()
+        self.predictor = nn.Sequential(
+            nn.Linear(input_dim, input_dim // 4),
+            nn.ReLU(),
+            nn.Linear(input_dim // 4, 1)
+        )
+        self._current_k_ratio = k_ratio
+
+    def forward(self, patch_embeddings):
+        """
+        Args:
+            patch_embeddings: (B, N, D) - intermediate patch features
+        Returns:
+            logits: (B, N) - importance logits (higher = more important)
+        """
+        return self.predictor(patch_embeddings).squeeze(-1)
+
+    def set_k_ratio(self, ratio):
+        self._current_k_ratio = ratio
+
+    def get_k(self, n_patches):
+        return max(1, int(n_patches * self._current_k_ratio))

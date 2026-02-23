@@ -7,7 +7,7 @@ import math
 from torch.amp import GradScaler
 from torch.optim.lr_scheduler import LambdaLR
 
-from models.full_model import ModelABaseline
+from models.full_model import ModelABaseline, ModelE
 from models.losses import ContrastiveLoss, SparsityLoss, LocalAlignmentLoss, FILIPContrastiveLoss, ConsistencyLoss
 from data.dataset import create_dataloaders
 from engine.trainer import train_one_epoch
@@ -94,7 +94,10 @@ def main():
         print(f"Data Loaded: {len(train_loader)} train batches, {len(val_loader)} val batches.")
 
         # 3. Model
-        model = ModelABaseline(cfg).to(device)
+        if cfg['model'].get('use_mid_drop', False):
+            model = ModelE(cfg).to(device)
+        else:
+            model = ModelABaseline(cfg).to(device)
         
         if wandb_run:
             wandb.watch(model, log='all', log_freq=500)
@@ -171,6 +174,20 @@ def main():
             criterions['mid_fusion_warmup_steps'] = cfg['model'].get('mid_fusion_loss_warmup_steps', 0)
             criterions['mid_fusion_dynamic_scale'] = cfg['model'].get('mid_fusion_loss_dynamic_scale', False)
             criterions['mid_fusion_target_ratio'] = cfg['model'].get('mid_fusion_loss_target_ratio', 0.1)
+
+        # Model E: FILIP local loss on selected patches (uses mid-fusion FILIP path in trainer)
+        if cfg['model'].get('use_filip_local', False):
+            criterions['local_alignment'] = FILIPContrastiveLoss(weight_i2t=weight_i2t, weight_t2i=weight_t2i)
+            criterions['mid_fusion_loss_type'] = 'filip'
+            criterions['mid_fusion_loss_weights'] = cfg['model'].get('filip_local_weight', [1.0])
+            criterions['mid_fusion_warmup_steps'] = cfg['model'].get('filip_local_warmup_steps', 500)
+
+        # Model E: k_ratio annealing for intra-ViT scorer
+        if cfg['model'].get('use_mid_drop', False) and 'k_ratio_start' in cfg['model']:
+            criterions['k_ratio_start'] = cfg['model']['k_ratio_start']
+            criterions['k_ratio_end'] = cfg['model'].get('k_ratio', 0.5)
+            criterions['k_ratio_anneal_steps'] = cfg['model'].get('k_ratio_anneal_steps', 5000)
+            print(f"Model E drop k annealing: {criterions['k_ratio_start']:.2f} -> {criterions['k_ratio_end']:.2f} over {criterions['k_ratio_anneal_steps']} steps")
 
         # Add Patch-IB losses if masking is enabled
         if cfg['model'].get('use_masking', False):
