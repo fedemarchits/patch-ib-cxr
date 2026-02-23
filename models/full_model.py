@@ -90,13 +90,17 @@ class ModelABaseline(nn.Module):
             self.patch_proj = nn.Linear(self.embed_dim, self.proj_dim)
             self.token_proj = nn.Linear(self.embed_dim, self.proj_dim)
 
-            # Multi-head cross-attention module (thesis Section 11.1)
-            n_heads = cfg['model'].get('local_alignment_n_heads', 4)
-            self.local_align = LocalAlignModule(
-                d_model=self.proj_dim,
-                n_heads=n_heads,
-                dropout=cfg['model'].get('local_alignment_dropout', 0.1)
-            )
+            # FILIP mode: skip cross-attention module (max-cosine matching, no cross-attn)
+            self.use_local_filip = cfg['model'].get('local_alignment_loss_type', 'mse') == 'filip'
+
+            if not self.use_local_filip:
+                # Multi-head cross-attention module (thesis Section 11.1)
+                n_heads = cfg['model'].get('local_alignment_n_heads', 4)
+                self.local_align = LocalAlignModule(
+                    d_model=self.proj_dim,
+                    n_heads=n_heads,
+                    dropout=cfg['model'].get('local_alignment_dropout', 0.1)
+                )
 
         # Mid-Fusion Cross-Attention
         self.use_mid_fusion = cfg['model'].get('use_mid_fusion', False)
@@ -344,7 +348,12 @@ class ModelABaseline(nn.Module):
                 token_embeddings, attention_mask = self.backbone.encode_text_tokens(text)
 
                 if self.use_topk_masking and topk_indices is not None:
-                    selected_patches = self.mask_head.get_selected_patches(patch_tokens, topk_indices)
+                    # BUG FIX: multiply by STE mask BEFORE gathering so the local
+                    # alignment gradient flows back through the STE to importance_logits.
+                    # Forward: identical (mask=1 at topk positions, gathered values unchanged).
+                    # Backward: d_local_loss/d_mask[i] = <grad, patch_tokens[i]> → logits.
+                    masked_for_local = patch_tokens * mask.unsqueeze(-1)
+                    selected_patches = self.mask_head.get_selected_patches(masked_for_local, topk_indices)
                     patch_features = self.patch_proj(selected_patches)
                 else:
                     patch_features = self.patch_proj(patch_tokens)
@@ -354,11 +363,15 @@ class ModelABaseline(nn.Module):
                 patch_features = F.normalize(patch_features, dim=-1)
                 token_features = F.normalize(token_features, dim=-1)
 
-                aligned_features, attn_weights = self.local_align(
-                    token_features, patch_features
-                )
-                local_features = (patch_features, token_features, attention_mask,
-                                  aligned_features, attn_weights)
+                if self.use_local_filip:
+                    # Return as list to use the mid-fusion FILIP path in trainer
+                    local_features = [(patch_features, token_features, attention_mask)]
+                else:
+                    aligned_features, attn_weights = self.local_align(
+                        token_features, patch_features
+                    )
+                    local_features = (patch_features, token_features, attention_mask,
+                                      aligned_features, attn_weights)
             # =======================================================
 
         return img_embedding, text_embedding, importance_logits, local_features, img_emb_full

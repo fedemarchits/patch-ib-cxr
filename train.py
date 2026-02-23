@@ -143,13 +143,24 @@ def main():
 
         # Add local alignment loss if enabled
         if cfg['model'].get('use_local_alignment', False):
-            criterions['local_alignment'] = LocalAlignmentLoss(
-                temperature=cfg['model'].get('local_alignment_temperature', 1.0),
-                loss_type=cfg['model'].get('local_alignment_loss_type', 'mse'),
-                symmetric=cfg['model'].get('local_alignment_symmetric', False)
-            )
-            criterions['local_weight'] = cfg['model'].get('local_alignment_weight', 0.1)
-            criterions['local_warmup_steps'] = cfg['model'].get('local_alignment_warmup_steps', 0)
+            local_loss_type = cfg['model'].get('local_alignment_loss_type', 'mse')
+            if local_loss_type == 'filip':
+                # FILIP: InfoNCE-based, co-scales with global contrastive (same logit_scale).
+                # Uses the mid-fusion list path in trainer (local_features is a list).
+                criterions['local_alignment'] = FILIPContrastiveLoss(
+                    weight_i2t=weight_i2t, weight_t2i=weight_t2i
+                )
+                criterions['mid_fusion_loss_type'] = 'filip'
+                criterions['mid_fusion_loss_weights'] = [cfg['model'].get('local_alignment_weight', 1.0)]
+                criterions['mid_fusion_warmup_steps'] = cfg['model'].get('local_alignment_warmup_steps', 0)
+            else:
+                criterions['local_alignment'] = LocalAlignmentLoss(
+                    temperature=cfg['model'].get('local_alignment_temperature', 1.0),
+                    loss_type=local_loss_type,
+                    symmetric=cfg['model'].get('local_alignment_symmetric', False)
+                )
+                criterions['local_weight'] = cfg['model'].get('local_alignment_weight', 0.1)
+                criterions['local_warmup_steps'] = cfg['model'].get('local_alignment_warmup_steps', 0)
 
         # Mid-fusion local loss (per-module weights)
         mid_fusion_loss_weights = cfg['model'].get('mid_fusion_loss_weights', None)
