@@ -348,12 +348,13 @@ class ModelABaseline(nn.Module):
                 token_embeddings, attention_mask = self.backbone.encode_text_tokens(text)
 
                 if self.use_topk_masking and topk_indices is not None:
-                    # BUG FIX: multiply by STE mask BEFORE gathering so the local
-                    # alignment gradient flows back through the STE to importance_logits.
-                    # Forward: identical (mask=1 at topk positions, gathered values unchanged).
-                    # Backward: d_local_loss/d_mask[i] = <grad, patch_tokens[i]> → logits.
-                    masked_for_local = patch_tokens * mask.unsqueeze(-1)
-                    selected_patches = self.mask_head.get_selected_patches(masked_for_local, topk_indices)
+                    # Gather selected patches directly (no STE mask multiplication).
+                    # Gradient from FILIP flows to backbone (patch_tokens) but NOT to
+                    # importance_logits — this prevents logit mean explosion caused by
+                    # one-sided STE gradient (only selected patches receive FILIP signal).
+                    # MaskHead gradient comes from: masked contrastive mean-pool STE path
+                    # (which gives balanced gradient to ALL patches) + sparsity loss.
+                    selected_patches = self.mask_head.get_selected_patches(patch_tokens, topk_indices)
                     patch_features = self.patch_proj(selected_patches)
                 else:
                     patch_features = self.patch_proj(patch_tokens)
