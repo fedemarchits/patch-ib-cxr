@@ -186,6 +186,19 @@ def main():
             criterions['mid_fusion_dynamic_scale'] = cfg['model'].get('mid_fusion_loss_dynamic_scale', False)
             criterions['mid_fusion_target_ratio'] = cfg['model'].get('mid_fusion_loss_target_ratio', 0.1)
 
+        # Multi-scale probes: FILIP at intermediate ViT layers (no injection).
+        # Overrides the single-weight set by use_local_alignment above with the
+        # full per-layer weight list defined in the config.
+        if cfg['model'].get('use_multiscale_probes', False):
+            probe_weights = cfg['model'].get('mid_fusion_loss_weights', [0.1, 0.2, 0.3])
+            criterions['local_alignment'] = FILIPContrastiveLoss(
+                weight_i2t=weight_i2t, weight_t2i=weight_t2i
+            )
+            criterions['mid_fusion_loss_type'] = 'filip'
+            criterions['mid_fusion_loss_weights'] = probe_weights
+            criterions['mid_fusion_warmup_steps'] = cfg['model'].get('mid_fusion_warmup_steps', 500)
+            print(f"Multi-scale probes: FILIP weights per layer = {probe_weights}")
+
         # Model E: FILIP local loss on selected patches (uses mid-fusion FILIP path in trainer)
         if cfg['model'].get('use_filip_local', False):
             criterions['local_alignment'] = FILIPContrastiveLoss(weight_i2t=weight_i2t, weight_t2i=weight_t2i)

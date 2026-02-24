@@ -102,6 +102,25 @@ class ModelABaseline(nn.Module):
                     dropout=cfg['model'].get('local_alignment_dropout', 0.1)
                 )
 
+        # Multi-scale alignment probes (no injection — deep supervision only).
+        # Extracts patch features at specified intermediate ViT layers and computes
+        # FILIP against full BERT token features. The ViT forward pass is unmodified
+        # (no cross-modal residual injection), so the global embedding space is not
+        # contaminated by text. This is purely auxiliary supervision at multiple depths.
+        self.use_multiscale_probes = cfg['model'].get('use_multiscale_probes', False)
+        if self.use_multiscale_probes:
+            probe_layers = cfg['model'].get('probe_layers', [4, 8])
+            # Convert 1-indexed layer numbers to 0-indexed block indices
+            self.probe_layer_indices = [l - 1 for l in probe_layers]
+            # Separate projection heads per probe depth:
+            # different ViT depths live in different subspaces
+            self.probe_patch_projs = nn.ModuleList([
+                nn.Linear(self.embed_dim, self.proj_dim) for _ in probe_layers
+            ])
+            self.probe_token_projs = nn.ModuleList([
+                nn.Linear(self.embed_dim, self.proj_dim) for _ in probe_layers
+            ])
+
         # Mid-Fusion Cross-Attention
         self.use_mid_fusion = cfg['model'].get('use_mid_fusion', False)
         if self.use_mid_fusion:
@@ -164,6 +183,35 @@ class ModelABaseline(nn.Module):
             print("CRITICAL ERROR: Could not find projection layer.")
             print(f"Available attributes: {dir(visual_model)}")
             raise AttributeError("Cannot project 768->512. Check logs.")
+
+    def _forward_with_probes(self, images):
+        """
+        Layer-by-layer ViT forward that snapshots patch features at probe layers.
+        No cross-modal injection — the ViT sees only the image, exactly as in Model A.
+        Probe features are used exclusively for FILIP supervision (auxiliary losses).
+
+        Returns:
+            final_features:  (B, 197, D) — final normed ViT features (CLS + patches)
+            probe_features:  list of (B, 196, D) — patch snapshots at each probe layer
+        """
+        vit_trunk = self.backbone.clip_model.visual.trunk
+        x = vit_trunk.patch_embed(images)
+        x = vit_trunk._pos_embed(x)
+        x = vit_trunk.patch_drop(x)
+        x = vit_trunk.norm_pre(x)
+
+        probe_set = set(self.probe_layer_indices)
+        probe_features = []
+
+        for i, block in enumerate(vit_trunk.blocks):
+            x = block(x)
+            if i in probe_set:
+                # Snapshot patch tokens (exclude CLS at index 0); clone to
+                # detach from inplace ops in subsequent blocks
+                probe_features.append(x[:, 1:, :].clone())
+
+        x = vit_trunk.norm(x)
+        return x, probe_features
 
     def _forward_mid_fusion(self, images, text):
         """
@@ -250,7 +298,37 @@ class ModelABaseline(nn.Module):
         img_emb_full = None
         topk_indices = None
 
-        if self.use_mid_fusion:
+        if self.use_multiscale_probes:
+            # ============ MULTI-SCALE PROBE PATH ============
+            # Pure visual ViT forward (same as Model A) + FILIP at intermediate layers.
+            # No cross-modal injection — text never modifies image features.
+            features, probe_feats = self._forward_with_probes(images)
+
+            cls_token = features[:, 0, :]
+            img_embedding = self._project_embedding(cls_token)
+            img_embedding = F.normalize(img_embedding, p=2, dim=-1)
+
+            text_embedding = self.backbone.encode_text(text)
+            text_embedding = F.normalize(text_embedding, p=2, dim=-1)
+
+            # Build FILIP supervision list: one entry per probe layer
+            # Trainer will average the losses across entries (is_filip=True path)
+            token_embeddings, attention_mask = self.backbone.encode_text_tokens(text)
+            local_features = []
+            for k, patch_feats in enumerate(probe_feats):
+                pf = F.normalize(self.probe_patch_projs[k](patch_feats), dim=-1)
+                tf = F.normalize(self.probe_token_projs[k](token_embeddings), dim=-1)
+                local_features.append((pf, tf, attention_mask))
+
+            # Optional: also add final post-ViT FILIP as an additional probe
+            if self.use_local_alignment:
+                patch_tokens = features[:, 1:, :]
+                pf_final = F.normalize(self.patch_proj(patch_tokens), dim=-1)
+                tf_final = F.normalize(self.token_proj(token_embeddings), dim=-1)
+                local_features.append((pf_final, tf_final, attention_mask))
+            # ================================================
+
+        elif self.use_mid_fusion:
             # ============ MID-FUSION PATH — Dual Contrastive (ALBEF-style) ============
             # 1. Lockstep forward with cross-attention
             vit_features, bert_hidden, attention_mask, mid_intermediates = \

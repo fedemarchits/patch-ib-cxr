@@ -1,0 +1,66 @@
+experiment_name: "model_b_multiscale_probes"
+
+data:
+  json_path: "/workspace/mimic_master_official_split.jsonl"
+  image_root: "/datasets/MIMIC-CXR/files"
+  batch_size: 48
+  num_workers: 4
+  image_size: 224
+  text_sections: "findings_impression"
+
+model:
+  vision_backbone: "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
+  text_backbone: "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
+
+  # Multi-scale alignment probes.
+  # FILIP is computed at ViT layers 4, 8, and 12 (post-ViT), but
+  # no text information is injected back into the ViT — forward pass
+  # is identical to Model A. Probes are pure auxiliary supervision.
+  use_multiscale_probes: true
+  probe_layers: [4, 8]      # 1-indexed ViT layer numbers for intermediate probes
+
+  # Also add a final post-ViT FILIP probe (layer 12 equivalent).
+  # Reuses the patch_proj / token_proj from use_local_alignment.
+  use_local_alignment: true
+  local_alignment_loss_type: "filip"
+
+  # No masking, no mid-fusion
+  use_masking: false
+  use_mid_fusion: false
+
+  # Global CLS contrastive (same as Model A)
+  contrastive_full_weight: 1.0
+
+  # FILIP probe loss weights: [layer4, layer8, layer12(final)]
+  # Early layers (4) encode low-level features — downweight them.
+  # Later layers (8, 12) are more semantically meaningful.
+  mid_fusion_loss_weights: [0.1, 0.2, 0.3]
+  mid_fusion_warmup_steps: 500   # Let backbone warm up before probe losses activate
+
+training:
+  staged_training: true
+  warmup_epochs: 1
+  warmup_lr: 1.0e-4
+
+  early_stopping_metric: "combined"
+  combined_weights:
+    recall: 0.7
+    auc: 0.3
+  eval_auc_every: 1
+
+  epochs: 40
+  lr: 1.0e-5
+  weight_decay: 0.02
+  warmup_steps: 1000
+  early_stopping_patience: 6
+  print_freq: 50
+  device: "cuda"
+  use_amp: true
+  gradient_accumulation_steps: 4
+  freeze_backbone: false
+  llrd_factor: 0.85
+
+wandb:
+  enable: true
+  project: "Thesis-PatchIB"
+  run_name: "model-b-multiscale-probes"
