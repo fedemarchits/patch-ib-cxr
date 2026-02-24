@@ -15,6 +15,7 @@ from engine.visualizer import (
     visualize_filip_alignment
 )
 from engine.grounding_evaluator import evaluate_phrase_grounding, evaluate_mask_grounding
+from engine.deletion_insertion import run_deletion_insertion_test
 
 # Try to import wandb (optional)
 try:
@@ -145,6 +146,7 @@ if __name__ == "__main__":
     parser.add_argument("--wandb_project", type=str, default="Thesis-PatchIB", help="W&B project name")
     parser.add_argument("--wandb_run_name", type=str, default=None, help="W&B run name (auto-generated if not set)")
     parser.add_argument("--ms_cxr_csv", type=str, default=None, help="Path to MS-CXR CSV for phrase grounding eval")
+    parser.add_argument("--deletion_insertion", action="store_true", help="Run deletion/insertion faithfulness test")
     parser.add_argument("--ms_cxr_image_root", type=str, default="/datasets/MIMIC-CXR", help="Root dir for MIMIC-CXR images")
     args = parser.parse_args()
 
@@ -231,7 +233,17 @@ if __name__ == "__main__":
         )
         grounding_metrics.update(mask_grounding_metrics)
 
-    # F. UMAP Visualization (always run, single-label test samples)
+    # F. Deletion / Insertion faithfulness test (optional)
+    di_metrics = {}
+    if args.deletion_insertion:
+        print("\nRunning Deletion/Insertion faithfulness test...")
+        di_metrics = run_deletion_insertion_test(
+            model=model,
+            dataloader=test_loader,
+            device=device,
+        )
+
+    # G. UMAP Visualization (always run, single-label test samples)
     umap_path = evaluator.generate_umap_visualization(output_dir=vis_dir)
 
     # F. Attention Visualizations (optional)
@@ -301,6 +313,7 @@ if __name__ == "__main__":
         **ret_metrics,
         **cls_metrics,
         **grounding_metrics,
+        **di_metrics,
         "checkpoint": args.checkpoint,
         "config": args.config,
         "device": device,

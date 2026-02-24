@@ -123,6 +123,16 @@ def _get_frozen_backbone_groups(model, base_lr, weight_decay):
             'name': 'mid_fusion_projections'
         })
 
+    # Multi-scale probe projection heads (if present)
+    if hasattr(model, 'probe_patch_projs'):
+        trainable_params.append({
+            'params': list(model.probe_patch_projs.parameters()) +
+                      list(model.probe_token_projs.parameters()),
+            'lr': base_lr,
+            'weight_decay': weight_decay,
+            'name': 'probe_projections'
+        })
+
     return trainable_params
 
 
