@@ -821,3 +821,281 @@ def visualize_filip_alignment(
 
     print(f"[Visualizer] Saved {samples_saved} FILIP alignment visualizations to {output_dir}")
     return samples_saved
+
+
+def visualize_grounding_on_annotations(
+    model,
+    csv_path,
+    image_root,
+    device,
+    output_dir,
+    num_samples=20,
+    use_amp=False,
+    image_size=224,
+    patch_size=16,
+):
+    """
+    For each MS-CXR (image, phrase, GT bbox) triplet, visualise the model's
+    importance map alongside the radiologist-annotated ground-truth region.
+
+    Works for ALL model types:
+      - Models C / D / E : importance_logits from MaskHead / PatchScorerMLP
+      - Model B (FILIP)  : max token-patch cosine similarity per patch
+      - Model A / fallback: per-patch cosine similarity with text CLS embedding
+
+    Each saved figure has five panels:
+      1. Original image
+      2. Predicted importance heatmap (min-max normalised, jet colourmap)
+      3. GT bounding box overlay (green rectangle)
+      4. Heatmap + GT bbox together (shows alignment visually)
+      5. Hard selection mask (top-50% patches) + GT bbox
+
+    Saved to: output_dir/grounding_vis/
+    Filename: {category}_{sample_idx}.png
+
+    Args:
+        model       : trained model (any variant)
+        csv_path    : path to MS_CXR_Local_Alignment_v1.1.0.csv
+        image_root  : root dir for MIMIC-CXR images
+        device      : torch device
+        output_dir  : parent directory (grounding_vis/ subdir is created)
+        num_samples : max number of samples to visualise
+        use_amp     : whether to use AMP autocast
+        image_size  : model input size (224)
+        patch_size  : ViT patch size (16)
+    """
+    import csv as _csv
+    from PIL import Image as PILImage
+    from collections import defaultdict
+    import open_clip
+    from matplotlib.patches import Rectangle
+
+    _ensure_matplotlib()
+    model.eval()
+
+    save_dir = os.path.join(output_dir, "grounding_vis")
+    os.makedirs(save_dir, exist_ok=True)
+
+    grid_size = image_size // patch_size  # 14
+
+    # ── Load MS-CXR annotations ────────────────────────────────────────────
+    raw = defaultdict(lambda: {
+        "bboxes": [], "category_name": None, "label_text": None,
+        "path": None, "image_width": None, "image_height": None,
+    })
+    with open(csv_path, "r") as f:
+        reader = _csv.DictReader(f)
+        for row in reader:
+            if row["split"] != "test":
+                continue
+            key = (row["dicom_id"], row["label_text"])
+            e = raw[key]
+            e["dicom_id"] = row["dicom_id"]
+            e["category_name"] = row["category_name"]
+            e["label_text"] = row["label_text"]
+            e["path"] = row["path"]
+            e["image_width"] = int(row["image_width"])
+            e["image_height"] = int(row["image_height"])
+            e["bboxes"].append((int(row["x"]), int(row["y"]),
+                                int(row["w"]), int(row["h"])))
+
+    samples = list(raw.values())
+    print(f"\n[GroundingVis] {len(samples)} MS-CXR test samples. "
+          f"Visualising up to {num_samples}.")
+
+    # ── Image transform (same as grounding evaluator) ──────────────────────
+    from torchvision import transforms
+    transform = transforms.Compose([
+        transforms.Resize((image_size, image_size)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                             std=[0.229, 0.224, 0.225]),
+    ])
+
+    tokenizer = open_clip.get_tokenizer(
+        "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
+    )
+
+    # ── Determine score extraction strategy ───────────────────────────────
+    has_logits   = False   # will be confirmed on first forward pass
+    has_filip_mf = (hasattr(model, 'use_mid_fusion_local_loss')
+                    and model.use_mid_fusion_local_loss)
+    has_filip_e  = (hasattr(model, 'use_filip_local')
+                    and model.use_filip_local)
+
+    saved = 0
+
+    with torch.no_grad():
+        for sample in tqdm(samples[:num_samples * 3], desc="GroundingVis"):
+            if saved >= num_samples:
+                break
+
+            img_path = os.path.join(image_root, sample["path"])
+            if not os.path.exists(img_path):
+                continue
+            try:
+                pil_img = PILImage.open(img_path).convert("RGB")
+            except Exception:
+                continue
+
+            img_tensor = transform(pil_img).unsqueeze(0).to(device)
+            text_tokens = tokenizer(sample["label_text"]).to(device)
+
+            with torch.amp.autocast(device_type=str(device), enabled=use_amp):
+                img_emb, txt_emb, importance_logits, local_features, _ = \
+                    model(img_tensor, text_tokens)
+
+            # ── Extract per-patch importance scores ────────────────────────
+            if importance_logits is not None:
+                # Models C / D / E: direct scorer output
+                scores = importance_logits[0].cpu().float()          # (196,)
+            elif has_filip_mf and local_features is not None and len(local_features) > 0:
+                # Model B|2 / C|2 / D — last mid-fusion layer FILIP features
+                pf, tf, am = local_features[-1]
+                patch_f = F.normalize(pf[0].cpu().float(), dim=-1)  # (196, D)
+                token_f = F.normalize(tf[0].cpu().float(), dim=-1)  # (L, D)
+                valid = (text_tokens[0] != 0).cpu()
+                valid[0] = False  # skip CLS
+                sim = token_f[valid] @ patch_f.t()                   # (N_tok, 196)
+                scores = sim.max(dim=0).values                        # (196,) max over tokens
+            elif has_filip_e and local_features is not None and len(local_features) > 0:
+                # Model E with use_filip_local
+                pf, tf, am = local_features[0]
+                patch_f = F.normalize(pf[0].cpu().float(), dim=-1)
+                token_f = F.normalize(tf[0].cpu().float(), dim=-1)
+                valid = (text_tokens[0] != 0).cpu()
+                valid[0] = False
+                sim = token_f[valid] @ patch_f.t()
+                scores = sim.max(dim=0).values
+            else:
+                # Model A fallback: per-patch cosine with text CLS
+                all_tokens = model.backbone.encode_image_patches(img_tensor)
+                patch_feats = all_tokens[:, 1:, :].squeeze(0).cpu().float()  # (196, 768)
+                t_emb_norm = F.normalize(txt_emb[0].cpu().float(), dim=-1)  # (512,)
+                B_flat, D_flat = patch_feats.shape
+                flat = patch_feats.reshape(B_flat, D_flat)
+                proj = model._project_embedding(flat.to(device)).cpu().float()
+                proj = F.normalize(proj, dim=-1)
+                scores = (proj * t_emb_norm.unsqueeze(0)).sum(-1)            # (196,)
+
+            # ── Build GT bbox mask on patch grid ──────────────────────────
+            gt_mask = np.zeros((grid_size, grid_size), dtype=np.float32)
+            iw, ih = sample["image_width"], sample["image_height"]
+            for (x, y, w, h) in sample["bboxes"]:
+                x1 = int(x / iw * grid_size)
+                y1 = int(y / ih * grid_size)
+                x2 = min(grid_size, int((x + w) / iw * grid_size) + 1)
+                y2 = min(grid_size, int((y + h) / ih * grid_size) + 1)
+                gt_mask[y1:y2, x1:x2] = 1.0
+
+            if gt_mask.sum() == 0:
+                continue
+
+            # ── Normalise scores to [0, 1] for display ────────────────────
+            s_min, s_max = scores.min().item(), scores.max().item()
+            if s_max > s_min:
+                norm_scores = (scores - s_min) / (s_max - s_min)
+            else:
+                norm_scores = torch.zeros_like(scores)
+
+            score_grid = norm_scores.numpy().reshape(grid_size, grid_size)
+            score_up   = upsample_mask(score_grid, (image_size, image_size))
+
+            # Hard mask: top-50% patches selected
+            threshold  = np.percentile(norm_scores.numpy(), 50)
+            hard_grid  = (score_grid >= threshold).astype(np.float32)
+            hard_up    = upsample_mask(hard_grid, (image_size, image_size))
+
+            gt_up      = upsample_mask(gt_mask, (image_size, image_size))
+
+            # Denormalise for display
+            img_np = denormalize_image(img_tensor[0].cpu())
+
+            # ── Compute quick CNT and IoU for the figure title ─────────────
+            max_idx = np.unravel_index(np.argmax(score_grid), score_grid.shape)
+            cnt_hit = bool(gt_mask[max_idx] > 0)
+            inter   = (hard_grid * gt_mask).sum()
+            union   = ((hard_grid + gt_mask) > 0).sum()
+            iou     = float(inter / union) if union > 0 else 0.0
+
+            # ── Plot ───────────────────────────────────────────────────────
+            fig, axes = plt.subplots(1, 5, figsize=(25, 5))
+
+            # 1. Original
+            axes[0].imshow(img_np)
+            axes[0].set_title("Original image", fontsize=9)
+            axes[0].axis('off')
+
+            # 2. Predicted heatmap
+            axes[1].imshow(img_np)
+            im = axes[1].imshow(score_up, cmap='jet', alpha=0.55, vmin=0, vmax=1)
+            axes[1].set_title("Predicted importance", fontsize=9)
+            axes[1].axis('off')
+            plt.colorbar(im, ax=axes[1], fraction=0.046, pad=0.04)
+
+            # 3. GT bbox
+            axes[2].imshow(img_np)
+            axes[2].imshow(gt_up, cmap='Greens', alpha=0.4, vmin=0, vmax=1)
+            # Draw rectangles for each bbox in original coords scaled to 224
+            for (x, y, w, h) in sample["bboxes"]:
+                rx = x / iw * image_size
+                ry = y / ih * image_size
+                rw = w / iw * image_size
+                rh = h / ih * image_size
+                rect = Rectangle((rx, ry), rw, rh,
+                                  linewidth=2, edgecolor='lime',
+                                  facecolor='none')
+                axes[2].add_patch(rect)
+            axes[2].set_title("GT annotation", fontsize=9)
+            axes[2].axis('off')
+
+            # 4. Heatmap + GT bbox together
+            axes[3].imshow(img_np)
+            axes[3].imshow(score_up, cmap='jet', alpha=0.55, vmin=0, vmax=1)
+            for (x, y, w, h) in sample["bboxes"]:
+                rx = x / iw * image_size
+                ry = y / ih * image_size
+                rw = w / iw * image_size
+                rh = h / ih * image_size
+                rect = Rectangle((rx, ry), rw, rh,
+                                  linewidth=2, edgecolor='lime',
+                                  facecolor='none')
+                axes[3].add_patch(rect)
+            hit_str = "HIT" if cnt_hit else "MISS"
+            axes[3].set_title(f"Overlap  CNT={hit_str}  IoU={iou:.2f}", fontsize=9)
+            axes[3].axis('off')
+
+            # 5. Hard mask (top-50%) + GT bbox
+            masked_img = img_np * hard_up[:, :, None]
+            axes[4].imshow(masked_img)
+            for (x, y, w, h) in sample["bboxes"]:
+                rx = x / iw * image_size
+                ry = y / ih * image_size
+                rw = w / iw * image_size
+                rh = h / ih * image_size
+                rect = Rectangle((rx, ry), rw, rh,
+                                  linewidth=2, edgecolor='lime',
+                                  facecolor='none')
+                axes[4].add_patch(rect)
+            axes[4].set_title(f"Top-50% mask + GT", fontsize=9)
+            axes[4].axis('off')
+
+            phrase_short = sample["label_text"]
+            if len(phrase_short) > 80:
+                phrase_short = phrase_short[:80] + "…"
+            fig.suptitle(
+                f"[{sample['category_name']}]  \"{phrase_short}\"",
+                fontsize=10, y=1.02
+            )
+            plt.tight_layout()
+
+            # Safe filename: replace spaces/slashes
+            cat_safe = sample["category_name"].replace(" ", "_").replace("/", "-")
+            fname = f"{cat_safe}_{saved:03d}.png"
+            plt.savefig(os.path.join(save_dir, fname), dpi=150, bbox_inches='tight')
+            plt.close()
+
+            saved += 1
+
+    print(f"[GroundingVis] Saved {saved} figures to {save_dir}/")
+    return saved

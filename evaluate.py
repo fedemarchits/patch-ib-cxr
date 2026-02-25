@@ -12,7 +12,7 @@ from engine.evaluator import Evaluator
 from engine.visualizer import (
     visualize_attention_samples, visualize_token_attention,
     visualize_mid_fusion_attention, visualize_mid_fusion_token_attention,
-    visualize_filip_alignment
+    visualize_filip_alignment, visualize_grounding_on_annotations
 )
 from engine.grounding_evaluator import evaluate_phrase_grounding, evaluate_mask_grounding
 from engine.deletion_insertion import run_deletion_insertion_test
@@ -236,6 +236,17 @@ if __name__ == "__main__":
             use_amp=use_amp,
         )
         grounding_metrics.update(mask_grounding_metrics)
+
+        # E3. Importance map visualisations on annotated samples (all models)
+        visualize_grounding_on_annotations(
+            model=model,
+            csv_path=args.ms_cxr_csv,
+            image_root=args.ms_cxr_image_root,
+            device=device,
+            output_dir=vis_dir,
+            num_samples=args.num_vis_samples,
+            use_amp=use_amp,
+        )
 
     # F. Deletion / Insertion faithfulness test (optional)
     di_metrics = {}
