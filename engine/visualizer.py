@@ -95,8 +95,22 @@ def visualize_attention_samples(
                 # === Visualize Patch Importance Mask (if masking enabled) ===
                 if importance_logits is not None:
                     mask_logits = importance_logits[i].cpu()  # (196,)
-                    mask_probs = torch.sigmoid(mask_logits)
-                    hard_mask = (mask_logits > 0).float()
+
+                    # Soft score: use min-max normalised logits (works for both STE and Top-K)
+                    logit_min = mask_logits.min()
+                    logit_max = mask_logits.max()
+                    if logit_max > logit_min:
+                        mask_probs = (mask_logits - logit_min) / (logit_max - logit_min)
+                    else:
+                        mask_probs = torch.sigmoid(mask_logits)
+
+                    # Hard mask: threshold at 0 for STE models; Top-K median for TopK models
+                    if (mask_logits > 0).float().mean() < 0.05 or (mask_logits > 0).float().mean() > 0.95:
+                        # Logits not centred around 0 — use Top-50% (median split) as hard mask
+                        threshold = mask_logits.median()
+                        hard_mask = (mask_logits >= threshold).float()
+                    else:
+                        hard_mask = (mask_logits > 0).float()
 
                     # Reshape to grid
                     mask_grid = mask_probs.view(grid_size, grid_size).numpy()

@@ -6,7 +6,7 @@ import json
 from datetime import datetime
 
 # Absolute imports (run from project root)
-from models.full_model import ModelABaseline
+from models.full_model import ModelABaseline, ModelE
 from data.dataset import create_dataloaders
 from engine.evaluator import Evaluator
 from engine.visualizer import (
@@ -176,7 +176,11 @@ if __name__ == "__main__":
         print("[WandB] wandb not installed. Skipping upload.")
 
     # 2. Load Model
-    model = ModelABaseline(cfg)
+    if cfg.get('model', {}).get('use_mid_drop', False):
+        model = ModelE(cfg)
+        print("Instantiated ModelE (intra-ViT patch dropping)")
+    else:
+        model = ModelABaseline(cfg)
 
     if args.checkpoint:
         print(f"Running evaluation on {device} using checkpoint: {args.checkpoint}")
