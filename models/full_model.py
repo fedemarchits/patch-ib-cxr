@@ -736,7 +736,7 @@ class ModelF(nn.Module):
 
         # Mask padding so they cannot inflate the max
         pad = (attn_mask == 0).unsqueeze(1)             # (B, 1, L)
-        sim = sim.masked_fill(pad, -1e9)
+        sim = sim.masked_fill(pad, torch.finfo(sim.dtype).min)
 
         return sim.max(dim=-1).values                   # (B, 196)
 

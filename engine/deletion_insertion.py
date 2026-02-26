@@ -77,7 +77,7 @@ def get_patch_scores(model, images, text):
         sim = torch.bmm(pf, tf.transpose(1, 2))                   # (B, 196,   L)
         # Mask padding tokens so they don't inflate the max
         pad = (attn_mask == 0).unsqueeze(1)                        # (B,   1,   L)
-        sim = sim.masked_fill(pad, -1e9)
+        sim = sim.masked_fill(pad, torch.finfo(sim.dtype).min)
         scores = sim.max(dim=-1).values                            # (B, 196)
 
     # ── Model A / fallback: per-patch projection-space similarity with text ──
