@@ -46,9 +46,12 @@ model:
   mid_fusion_loss_weights: [0.3]
   mid_fusion_warmup_steps: 500
 
-  # Global contrastive on masked mean-pool embedding
+  # Dual contrastive losses:
+  #   contrastive_mask_weight: weight on the main full-CLS contrastive (text-independent)
+  #   contrastive_full_weight: weight on the auxiliary masked-mean-pool contrastive
+  #     (text-conditioned via FILIP mask, trains scorer end-to-end via img_emb_full)
   contrastive_mask_weight: 1.0
-  contrastive_full_weight: 1.0   # Unused (img_emb_full=None)
+  contrastive_full_weight: 0.5   # Auxiliary signal on masked-mean-pool embedding
 
 training:
   staged_training: true
