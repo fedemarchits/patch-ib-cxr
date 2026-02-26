@@ -58,6 +58,10 @@ def compute_validation_auc(model, train_loader, val_loader, device, use_amp=Fals
         train_loader_with_labels = train_loader
         val_loader_with_labels = val_loader
 
+    # Detect ModelF/ModelFAdaptive: their img_emb is text-conditioned (FILIP scoring).
+    # Use text-independent encode_independent() for AUC to avoid data leakage.
+    needs_independent_eval = hasattr(model, 'probe_patch_proj')
+
     # Extract training embeddings and labels
     train_embs = []
     train_labels = []
@@ -73,7 +77,10 @@ def compute_validation_auc(model, train_loader, val_loader, device, use_amp=Fals
             images, text, labels = batch[0].to(device), batch[1].to(device), batch[2]
 
             with torch.amp.autocast(device_type=device, enabled=use_amp):
-                img_emb, _, _, _, _ = model(images, text)
+                if needs_independent_eval:
+                    img_emb, _ = model.encode_independent(images, text)
+                else:
+                    img_emb, _, _, _, _ = model(images, text)
                 img_emb = F.normalize(img_emb.float(), dim=-1)
 
             train_embs.append(img_emb.cpu().numpy())
@@ -105,7 +112,10 @@ def compute_validation_auc(model, train_loader, val_loader, device, use_amp=Fals
             images, text, labels = batch[0].to(device), batch[1].to(device), batch[2]
 
             with torch.amp.autocast(device_type=device, enabled=use_amp):
-                img_emb, _, _, _, _ = model(images, text)
+                if needs_independent_eval:
+                    img_emb, _ = model.encode_independent(images, text)
+                else:
+                    img_emb, _, _, _, _ = model(images, text)
                 img_emb = F.normalize(img_emb.float(), dim=-1)
 
             val_embs.append(img_emb.cpu().numpy())
@@ -227,6 +237,11 @@ def validate(model, dataloader, criterions, device, use_amp, compute_retrieval=F
     total_loss = 0
     num_batches = 0
 
+    # ModelF/ModelFAdaptive produce text-conditioned image embeddings.
+    # Their img_emb from forward() depends on the paired text via FILIP scoring,
+    # which would inflate retrieval metrics. Use encode_independent() instead.
+    needs_independent_eval = hasattr(model, 'probe_patch_proj')
+
     contrastive_criterion = criterions['contrastive']
     local_criterion = criterions.get('local_alignment', None)
     local_weight = criterions.get('local_weight', 0.1)
@@ -317,8 +332,8 @@ def validate(model, dataloader, criterions, device, use_amp, compute_retrieval=F
         total_loss += loss.item()
         num_batches += 1
 
-        # Collect embeddings for retrieval
-        if compute_retrieval:
+        # Collect embeddings for retrieval (skip ModelF — handled separately below)
+        if compute_retrieval and not needs_independent_eval:
             if isinstance(img_emb_full, tuple) and len(img_emb_full) >= 2:
                 # Mid-fusion (2 or 3-tuple): use independent embeddings (no cross-attn leakage)
                 ind_img = img_emb_full[-2]
@@ -330,6 +345,20 @@ def validate(model, dataloader, criterions, device, use_amp, compute_retrieval=F
                 all_txt_emb.append(txt_emb.float().cpu())
 
     avg_loss = total_loss / num_batches if num_batches > 0 else 0
+
+    # ModelF/ModelFAdaptive: collect text-independent embeddings in a separate pass.
+    # img_emb from forward() is text-conditioned (FILIP-selected patches), so we
+    # call encode_independent() which uses the full 12-block ViT without any dropping.
+    if compute_retrieval and needs_independent_eval:
+        with torch.no_grad():
+            for batch in dataloader:
+                if batch is None:
+                    continue
+                images, text = batch[0].to(device), batch[1].to(device)
+                with torch.amp.autocast(device_type=device, enabled=use_amp):
+                    i_emb, t_emb = model.encode_independent(images, text)
+                all_img_emb.append(i_emb.float().cpu())
+                all_txt_emb.append(t_emb.float().cpu())
 
     if compute_retrieval:
         # Concatenate all embeddings

@@ -871,18 +871,25 @@ class ModelF(nn.Module):
     @torch.no_grad()
     def encode_independent(self, images, text):
         """
-        Evaluation encoding — uses the SAME FILIP-drop forward as training.
-        No train/inference mismatch: CLS is computed on the same K dropped patches.
+        Evaluation encoding — text-independent full ViT forward (all 196 patches).
+
+        The FILIP-drop forward used during training produces a text-conditioned
+        image embedding (the CLS attends only to patches selected for the paired
+        text), which violates retrieval evaluation independence and inflates R@K.
+        Using the full 12-block forward gives a genuinely text-independent image
+        embedding suitable for cross-modal retrieval benchmarks.
         """
-        token_feats, attn_mask = self.backbone.encode_text_tokens(text)
-        vit_features, _, _, _ = self._forward_with_filip_drop(images, token_feats, attn_mask)
-
-        cls_token = vit_features[:, 0, :]
-        img_emb = self._project_embedding(cls_token)
-        img_emb = F.normalize(img_emb, p=2, dim=-1)
-
+        vit_trunk = self.backbone.clip_model.visual.trunk
+        x = vit_trunk.patch_embed(images)
+        x = vit_trunk._pos_embed(x)
+        x = vit_trunk.patch_drop(x)
+        x = vit_trunk.norm_pre(x)
+        for block in vit_trunk.blocks:
+            x = block(x)
+        x = vit_trunk.norm(x)
+        cls_token = x[:, 0, :]
+        img_emb = F.normalize(self._project_embedding(cls_token), p=2, dim=-1)
         txt_emb = F.normalize(self.backbone.encode_text(text), dim=-1)
-
         return img_emb, txt_emb
 
 
@@ -962,7 +969,7 @@ class ModelFAdaptive(nn.Module):
     def _compute_filip_scores(self, patch_feats_768, token_feats_768, attn_mask):
         """
         Per-patch FILIP importance: score_i = max_{l: valid} cos(W_p_probe*p_i, W_t_probe*t_l)
-        Identical to ModelF._compute_filip_scores.
+Identical to ModelF._compute_filip_scores.
         """
         pf = F.normalize(self.probe_patch_proj(patch_feats_768), dim=-1)
         tf = F.normalize(self.probe_token_proj(token_feats_768), dim=-1)
@@ -1060,23 +1067,15 @@ class ModelFAdaptive(nn.Module):
     @torch.no_grad()
     def encode_independent(self, images, text):
         """
-        Evaluation encoding — full ViT + FILIP scoring + hard threshold mask.
-        No Gumbel noise at eval time: deterministic selection.
+        Evaluation encoding — full ViT forward, CLS token (text-independent).
+
+        The masked-mean-pool used during training requires text to compute the
+        FILIP mask, making the image embedding text-conditioned and violating
+        retrieval evaluation independence. The CLS token from the full 12-block
+        forward provides a text-independent image representation.
         """
-        token_feats, attn_mask = self.backbone.encode_text_tokens(text)
-        vit_features, probe_feats = self._forward_full_vit_with_probe(images)
-
-        filip_scores  = self._compute_filip_scores(probe_feats, token_feats, attn_mask)
-        scaled_scores = self.drop_temperature * filip_scores
-        mask          = (scaled_scores > 0).float()                 # hard threshold
-
-        patch_feats   = vit_features[:, 1:, :]
-        masked_feats  = patch_feats * mask.unsqueeze(-1)
-        mask_sum      = mask.sum(dim=1, keepdim=True).clamp(min=1.0)
-        img_emb_768   = masked_feats.sum(dim=1) / mask_sum
-
-        img_emb = self._project_embedding(img_emb_768)
-        img_emb = F.normalize(img_emb, p=2, dim=-1)
-
+        vit_features, _ = self._forward_full_vit_with_probe(images)
+        cls_token = vit_features[:, 0, :]
+        img_emb = F.normalize(self._project_embedding(cls_token), p=2, dim=-1)
         txt_emb = F.normalize(self.backbone.encode_text(text), dim=-1)
         return img_emb, txt_emb

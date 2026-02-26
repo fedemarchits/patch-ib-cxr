@@ -186,10 +186,15 @@ class Evaluator:
         For mid-fusion models, uses independent encoding (bypassing cross-attention)
         to avoid information leakage between modalities during evaluation.
         """
-        # Detect mid-fusion: use independent encoding to avoid retrieval cheating
-        use_independent = hasattr(self.model, 'use_mid_fusion') and self.model.use_mid_fusion
+        # Detect models that require independent encoding to avoid retrieval cheating:
+        # - Mid-fusion models: cross-attention makes img/txt embeddings interdependent
+        # - ModelF/ModelFAdaptive: FILIP scoring makes image embedding text-conditioned
+        use_independent = (
+            (hasattr(self.model, 'use_mid_fusion') and self.model.use_mid_fusion) or
+            hasattr(self.model, 'probe_patch_proj')  # ModelF / ModelFAdaptive
+        )
         if use_independent:
-            print("\n[Retrieval] Mid-fusion detected: using independent encoding (no cross-attention)")
+            print("\n[Retrieval] Using independent encoding (text-independent image embedding)")
         else:
             print("\n[Retrieval] Extracting embeddings...")
 
@@ -254,6 +259,8 @@ class Evaluator:
         """Extract L2-normalized image embeddings and labels from the test set."""
         test_embs = []
         test_labels = []
+        # ModelF/ModelFAdaptive: text-conditioned img_emb inflates clustering metrics
+        needs_independent = hasattr(self.model, 'probe_patch_proj')
 
         with torch.no_grad():
             for batch in tqdm(self.test_loader, desc="Test embeddings"):
@@ -261,7 +268,10 @@ class Evaluator:
                     continue
                 images, text, labels = batch[0].to(self.device), batch[1].to(self.device), batch[2]
 
-                img_emb, _, _, _, _ = self.model(images, text)
+                if needs_independent:
+                    img_emb, _ = self.model.encode_independent(images, text)
+                else:
+                    img_emb, _, _, _, _ = self.model(images, text)
                 img_emb = F.normalize(img_emb, dim=-1)
 
                 test_embs.append(img_emb.cpu().numpy())
