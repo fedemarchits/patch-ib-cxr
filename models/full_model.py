@@ -2,7 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from .backbone import BiomedCLIPBackbone
-from .heads import PatchMaskingHead, MaskHeadTopK, PatchScorerMLP, TopKStraightThrough
+from .heads import (PatchMaskingHead, MaskHeadTopK, PatchScorerMLP,
+                    TopKStraightThrough, StraightThroughEstimator, gumbel_sigmoid_sample)
 from .cross_attention import BidirectionalCrossAttention
 
 
@@ -882,4 +883,200 @@ class ModelF(nn.Module):
 
         txt_emb = F.normalize(self.backbone.encode_text(text), dim=-1)
 
+        return img_emb, txt_emb
+
+
+class ModelFAdaptive(nn.Module):
+    """
+    Model F Adaptive: Text-conditioned FILIP scoring + adaptive K via STE + sparsity.
+
+    Unlike Model F (fixed TopK budget), this model learns HOW MANY patches to keep
+    per image-text pair by using a soft threshold on FILIP scores instead of TopK.
+
+    Two competing forces determine the effective K:
+      - Probe FILIP loss: pushes text-relevant patch scores positive  (keep them)
+      - Sparsity loss:    pushes the mean activation toward target_ratio (be selective)
+
+    The threshold at score=0 has a natural interpretation:
+      "keep patches that are positively correlated with the text, discard the rest."
+
+    Architecture:
+      1. Full ViT forward (all 12 blocks, all 196 patches).
+      2. At drop_layer: snapshot intermediate features → compute FILIP scores
+         using probe projections W_p_probe / W_t_probe (text-conditioned).
+      3. STE on temperature-scaled scores → binary mask (variable K per image/query).
+         Gumbel-Sigmoid optionally replaces STE for training stability.
+      4. Masked mean-pool of POST-ViT patch features × mask → project → contrastive.
+      5. Probe FILIP loss on ALL 196 patches at drop_layer (key training signal).
+      6. Sparsity loss: (sigmoid(scaled_scores).mean() - target_ratio)^2.
+
+    Comparison with Model F (TopK):
+      Model F:         fixed K, true intra-ViT sequence reduction.
+      ModelFAdaptive:  variable K per query, full ViT, masked mean-pool.
+      Variable K means: "cardiomegaly" → few cardiac patches kept;
+                        "bilateral infiltrates" → patches across both lungs kept.
+    """
+
+    def __init__(self, cfg):
+        super().__init__()
+        self.backbone = BiomedCLIPBackbone(
+            model_name=cfg['model']['vision_backbone'],
+            device=cfg['training']['device']
+        )
+        self.embed_dim = 768
+        self.proj_dim  = 512
+
+        self.drop_layer = cfg['model'].get('drop_layer', 6)
+
+        # Temperature for STE binarisation: scales FILIP scores ∈ [-1,1] → [-T, T].
+        # Larger T makes the selection more binary (sigmoid closer to {0, 1}).
+        # T=5 → sigmoid(±1) = 0.007 / 0.993   (very binary)
+        # T=1 → sigmoid(±1) = 0.27  / 0.73    (soft, noisy selection)
+        self.drop_temperature = cfg['model'].get('drop_temperature', 5.0)
+
+        # Optional Gumbel-Sigmoid instead of plain STE (softer, gradient-smoothing)
+        self.use_gumbel = cfg['model'].get('use_gumbel', False)
+        self._tau = cfg['model'].get('gumbel_tau_start', 1.0)
+
+        # Probe projections for FILIP scoring at drop_layer (768 → 512)
+        self.probe_patch_proj = nn.Linear(self.embed_dim, self.proj_dim)
+        self.probe_token_proj = nn.Linear(self.embed_dim, self.proj_dim)
+
+        self.logit_scale = self.backbone.clip_model.logit_scale
+
+    # ─────────────────────── helpers ────────────────────────────────────────
+
+    def set_tau(self, tau):
+        """Update Gumbel temperature (called by trainer for annealing)."""
+        self._tau = tau
+
+    def _project_embedding(self, embedding):
+        visual_model = self.backbone.clip_model.visual
+        if hasattr(visual_model, 'proj') and visual_model.proj is not None:
+            return embedding @ visual_model.proj.to(embedding.dtype)
+        elif hasattr(visual_model, 'head') and visual_model.head is not None:
+            return visual_model.head(embedding)
+        else:
+            raise AttributeError("Cannot project 768->512. Check model architecture.")
+
+    def _compute_filip_scores(self, patch_feats_768, token_feats_768, attn_mask):
+        """
+        Per-patch FILIP importance: score_i = max_{l: valid} cos(W_p_probe*p_i, W_t_probe*t_l)
+        Identical to ModelF._compute_filip_scores.
+        """
+        pf = F.normalize(self.probe_patch_proj(patch_feats_768), dim=-1)
+        tf = F.normalize(self.probe_token_proj(token_feats_768), dim=-1)
+        sim = torch.bmm(pf, tf.transpose(1, 2))
+        pad = (attn_mask == 0).unsqueeze(1)
+        sim = sim.masked_fill(pad, torch.finfo(sim.dtype).min)
+        return sim.max(dim=-1).values                               # (B, 196)
+
+    # ─────────────────────── forward helpers ────────────────────────────────
+
+    def _forward_full_vit_with_probe(self, images):
+        """
+        Full ViT forward (all 12 blocks) with intermediate feature snapshot
+        at drop_layer (after running drop_layer blocks, same position as Model F/E).
+
+        Returns:
+            final_features: (B, 197, D)  post-ViT normed features
+            probe_feats:    (B, 196, D)  intermediate patch features at drop_layer
+        """
+        vit_trunk = self.backbone.clip_model.visual.trunk
+
+        x = vit_trunk.patch_embed(images)
+        x = vit_trunk._pos_embed(x)
+        x = vit_trunk.patch_drop(x)
+        x = vit_trunk.norm_pre(x)
+
+        probe_feats = None
+        for i, block in enumerate(vit_trunk.blocks):
+            x = block(x)
+            if i == self.drop_layer - 1:
+                # Snapshot after running exactly drop_layer blocks (consistent with Model F/E)
+                probe_feats = x[:, 1:, :].clone()                  # (B, 196, D)
+
+        x = vit_trunk.norm(x)
+        return x, probe_feats
+
+    def get_intermediate_patch_scores(self, images, text):
+        """
+        Text-conditioned FILIP scores at drop_layer on all 196 patches.
+        Used by deletion/insertion test and grounding visualisation.
+        Returns unscaled FILIP scores (before temperature multiplication).
+        """
+        token_feats, attn_mask = self.backbone.encode_text_tokens(text)
+        _, probe_feats = self._forward_full_vit_with_probe(images)
+        return self._compute_filip_scores(probe_feats, token_feats, attn_mask)
+
+    # ─────────────────────── main forward ───────────────────────────────────
+
+    def forward(self, images, text):
+        # Text encoding (needed for FILIP scoring at drop_layer)
+        token_feats, attn_mask = self.backbone.encode_text_tokens(text)
+
+        # Full ViT forward + intermediate snapshot
+        vit_features, probe_feats = self._forward_full_vit_with_probe(images)
+
+        # Text-conditioned FILIP scores at drop_layer
+        filip_scores  = self._compute_filip_scores(probe_feats, token_feats, attn_mask)
+
+        # Scale for STE binarisation and sparsity loss.
+        # SparsityLoss receives scaled_scores: (sigmoid(s).mean() - target_ratio)^2.
+        # With T=5: sigmoid(±1)=0.007/0.993 → strong gradient, near-binary selection.
+        scaled_scores = self.drop_temperature * filip_scores        # (B, 196)
+
+        # Binary mask: variable K per image-text pair
+        if self.use_gumbel:
+            # Gumbel-Sigmoid: soft exploration, bounded gradients
+            mask = gumbel_sigmoid_sample(scaled_scores, tau=self._tau)
+        else:
+            # Plain STE: threshold at 0 → keep patches with filip_score > 0
+            mask = StraightThroughEstimator.apply(scaled_scores)
+
+        # Masked mean-pool of post-ViT patch features
+        patch_feats   = vit_features[:, 1:, :]                     # (B, 196, D)
+        masked_feats  = patch_feats * mask.unsqueeze(-1)            # (B, 196, D)
+        mask_sum      = mask.sum(dim=1, keepdim=True).clamp(min=1.0)
+        img_emb_768   = masked_feats.sum(dim=1) / mask_sum          # (B, D)
+
+        img_emb = self._project_embedding(img_emb_768)
+        img_emb = F.normalize(img_emb, p=2, dim=-1)
+
+        txt_emb = F.normalize(self.backbone.encode_text(text), dim=-1)
+
+        # Probe FILIP loss: all 196 patches at drop_layer.
+        # Direct gradient to probe_patch_proj and ViT blocks 0..drop_layer-1.
+        pf_probe = F.normalize(self.probe_patch_proj(probe_feats), dim=-1)
+        tf_probe = F.normalize(self.probe_token_proj(token_feats), dim=-1)
+        local_features = [(pf_probe, tf_probe, attn_mask)]
+
+        # Return scaled_scores as importance_logits so:
+        #   - SparsityLoss(scaled_scores) → (sigmoid(s).mean() - target_ratio)^2
+        #   - Trainer mask logging uses scaled_scores > 0 as the kept ratio
+        #   - Grounding vis: scores are monotone w.r.t. raw FILIP scores (same ranking)
+        return img_emb, txt_emb, scaled_scores, local_features, None
+
+    @torch.no_grad()
+    def encode_independent(self, images, text):
+        """
+        Evaluation encoding — full ViT + FILIP scoring + hard threshold mask.
+        No Gumbel noise at eval time: deterministic selection.
+        """
+        token_feats, attn_mask = self.backbone.encode_text_tokens(text)
+        vit_features, probe_feats = self._forward_full_vit_with_probe(images)
+
+        filip_scores  = self._compute_filip_scores(probe_feats, token_feats, attn_mask)
+        scaled_scores = self.drop_temperature * filip_scores
+        mask          = (scaled_scores > 0).float()                 # hard threshold
+
+        patch_feats   = vit_features[:, 1:, :]
+        masked_feats  = patch_feats * mask.unsqueeze(-1)
+        mask_sum      = mask.sum(dim=1, keepdim=True).clamp(min=1.0)
+        img_emb_768   = masked_feats.sum(dim=1) / mask_sum
+
+        img_emb = self._project_embedding(img_emb_768)
+        img_emb = F.normalize(img_emb, p=2, dim=-1)
+
+        txt_emb = F.normalize(self.backbone.encode_text(text), dim=-1)
         return img_emb, txt_emb

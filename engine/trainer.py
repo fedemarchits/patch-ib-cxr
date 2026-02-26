@@ -59,14 +59,17 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
         if batch_idx % accumulation_steps == 0:
             optimizer.zero_grad()
 
-        # Anneal Gumbel temperature for Model C (Gumbel-Sigmoid masking)
-        if gumbel_tau_start is not None and hasattr(model, 'mask_head') and hasattr(model.mask_head, 'set_tau'):
+        # Anneal Gumbel temperature (Model C: mask_head.set_tau; ModelFAdaptive: model.set_tau)
+        if gumbel_tau_start is not None:
             if gumbel_tau_anneal_steps > 0:
                 progress = min(1.0, global_step / gumbel_tau_anneal_steps)
             else:
                 progress = 1.0
             current_tau = gumbel_tau_start + (gumbel_tau_end - gumbel_tau_start) * progress
-            model.mask_head.set_tau(current_tau)
+            if hasattr(model, 'mask_head') and hasattr(model.mask_head, 'set_tau'):
+                model.mask_head.set_tau(current_tau)
+            elif hasattr(model, 'set_tau'):
+                model.set_tau(current_tau)
 
         # Anneal k_ratio for Top-K masking (Model D) or intra-ViT scorer (Model E)
         if k_ratio_start is not None:

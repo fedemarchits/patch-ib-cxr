@@ -7,7 +7,7 @@ import math
 from torch.amp import GradScaler
 from torch.optim.lr_scheduler import LambdaLR
 
-from models.full_model import ModelABaseline, ModelE, ModelF
+from models.full_model import ModelABaseline, ModelE, ModelF, ModelFAdaptive
 from models.losses import ContrastiveLoss, SparsityLoss, LocalAlignmentLoss, FILIPContrastiveLoss, ConsistencyLoss
 from data.dataset import create_dataloaders
 from engine.trainer import train_one_epoch
@@ -94,7 +94,10 @@ def main():
         print(f"Data Loaded: {len(train_loader)} train batches, {len(val_loader)} val batches.")
 
         # 3. Model
-        if cfg['model'].get('use_filip_drop', False):
+        if cfg['model'].get('use_filip_adaptive', False):
+            model = ModelFAdaptive(cfg).to(device)
+            print("Instantiated ModelFAdaptive (text-conditioned FILIP, adaptive K via STE+sparsity)")
+        elif cfg['model'].get('use_filip_drop', False):
             model = ModelF(cfg).to(device)
             print("Instantiated ModelF (text-conditioned FILIP-scored intra-ViT drop)")
         elif cfg['model'].get('use_mid_drop', False):
@@ -208,6 +211,24 @@ def main():
             criterions['mid_fusion_loss_type'] = 'filip'
             criterions['mid_fusion_loss_weights'] = cfg['model'].get('filip_local_weight', [1.0])
             criterions['mid_fusion_warmup_steps'] = cfg['model'].get('filip_local_warmup_steps', 500)
+
+        # Model F Adaptive: probe FILIP at drop_layer + sparsity loss for variable K
+        if cfg['model'].get('use_filip_adaptive', False):
+            filip_weights = cfg['model'].get('mid_fusion_loss_weights', [0.3])
+            criterions['local_alignment'] = FILIPContrastiveLoss(weight_i2t=weight_i2t, weight_t2i=weight_t2i)
+            criterions['mid_fusion_loss_type'] = 'filip'
+            criterions['mid_fusion_loss_weights'] = filip_weights
+            criterions['mid_fusion_warmup_steps'] = cfg['model'].get('mid_fusion_warmup_steps', 500)
+            # Sparsity loss drives adaptive K: (sigmoid(scaled_scores).mean() - target_ratio)^2
+            criterions['sparsity_weight'] = cfg['model'].get('sparsity_weight', 5.0)
+            criterions['sparsity_warmup_steps'] = cfg['model'].get('sparsity_warmup_steps', 500)
+            # Gumbel temperature annealing (if use_gumbel: true)
+            if cfg['model'].get('use_gumbel', False) and 'gumbel_tau_start' in cfg['model']:
+                criterions['gumbel_tau_start'] = cfg['model']['gumbel_tau_start']
+                criterions['gumbel_tau_end'] = cfg['model'].get('gumbel_tau_end', 0.1)
+                criterions['gumbel_tau_anneal_steps'] = cfg['model'].get('gumbel_tau_anneal_steps', 5000)
+                print(f"ModelFAdaptive Gumbel tau: {criterions['gumbel_tau_start']} → {criterions['gumbel_tau_end']} over {criterions['gumbel_tau_anneal_steps']} steps")
+            print(f"ModelFAdaptive: probe FILIP weight={filip_weights}, sparsity_weight={criterions['sparsity_weight']}")
 
         # Model F: probe FILIP at drop_layer + optional final FILIP on selected patches
         if cfg['model'].get('use_filip_drop', False):
