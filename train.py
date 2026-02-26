@@ -7,7 +7,7 @@ import math
 from torch.amp import GradScaler
 from torch.optim.lr_scheduler import LambdaLR
 
-from models.full_model import ModelABaseline, ModelE
+from models.full_model import ModelABaseline, ModelE, ModelF
 from models.losses import ContrastiveLoss, SparsityLoss, LocalAlignmentLoss, FILIPContrastiveLoss, ConsistencyLoss
 from data.dataset import create_dataloaders
 from engine.trainer import train_one_epoch
@@ -94,7 +94,10 @@ def main():
         print(f"Data Loaded: {len(train_loader)} train batches, {len(val_loader)} val batches.")
 
         # 3. Model
-        if cfg['model'].get('use_mid_drop', False):
+        if cfg['model'].get('use_filip_drop', False):
+            model = ModelF(cfg).to(device)
+            print("Instantiated ModelF (text-conditioned FILIP-scored intra-ViT drop)")
+        elif cfg['model'].get('use_mid_drop', False):
             model = ModelE(cfg).to(device)
         else:
             model = ModelABaseline(cfg).to(device)
@@ -206,12 +209,27 @@ def main():
             criterions['mid_fusion_loss_weights'] = cfg['model'].get('filip_local_weight', [1.0])
             criterions['mid_fusion_warmup_steps'] = cfg['model'].get('filip_local_warmup_steps', 500)
 
-        # Model E: k_ratio annealing for intra-ViT scorer
-        if cfg['model'].get('use_mid_drop', False) and 'k_ratio_start' in cfg['model']:
+        # Model F: probe FILIP at drop_layer + optional final FILIP on selected patches
+        if cfg['model'].get('use_filip_drop', False):
+            filip_weights = cfg['model'].get('mid_fusion_loss_weights', [0.3, 0.3])
+            criterions['local_alignment'] = FILIPContrastiveLoss(weight_i2t=weight_i2t, weight_t2i=weight_t2i)
+            criterions['mid_fusion_loss_type'] = 'filip'
+            criterions['mid_fusion_loss_weights'] = filip_weights
+            criterions['mid_fusion_warmup_steps'] = cfg['model'].get('mid_fusion_warmup_steps', 500)
+            # Sparsity loss: TopK guarantees exact sparsity, so default weight is 0
+            criterions['sparsity_weight'] = cfg['model'].get('sparsity_weight', 0.0)
+            criterions['sparsity_warmup_steps'] = cfg['model'].get('sparsity_warmup_steps', 0)
+            print(f"Model F FILIP losses: probe + final weights = {filip_weights}")
+
+        # Model E / F: k_ratio annealing for intra-ViT scorer / FILIP drop
+        uses_intra_drop = (cfg['model'].get('use_mid_drop', False) or
+                           cfg['model'].get('use_filip_drop', False))
+        if uses_intra_drop and 'k_ratio_start' in cfg['model']:
             criterions['k_ratio_start'] = cfg['model']['k_ratio_start']
             criterions['k_ratio_end'] = cfg['model'].get('k_ratio', 0.5)
             criterions['k_ratio_anneal_steps'] = cfg['model'].get('k_ratio_anneal_steps', 5000)
-            print(f"Model E drop k annealing: {criterions['k_ratio_start']:.2f} -> {criterions['k_ratio_end']:.2f} over {criterions['k_ratio_anneal_steps']} steps")
+            label = "F (FILIP-drop)" if cfg['model'].get('use_filip_drop') else "E (mid-drop)"
+            print(f"Model {label} k annealing: {criterions['k_ratio_start']:.2f} -> {criterions['k_ratio_end']:.2f} over {criterions['k_ratio_anneal_steps']} steps")
 
         # Add Patch-IB losses if masking is enabled
         if cfg['model'].get('use_masking', False):

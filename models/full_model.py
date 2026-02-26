@@ -641,3 +641,245 @@ class ModelE(nn.Module):
         txt_emb = F.normalize(txt_emb, p=2, dim=-1)
 
         return img_emb, txt_emb
+
+
+class ModelF(nn.Module):
+    """
+    Model F: Text-Conditioned FILIP-Scored Intra-ViT Patch Dropping.
+
+    Improves Model E by replacing the text-agnostic PatchScorerMLP with a
+    text-conditioned FILIP scorer. Patches at drop_layer are ranked by their
+    max cosine similarity to text tokens (probe projections W_p_probe / W_t_probe),
+    so the drop decision is query-specific rather than globally biased.
+
+    Two complementary training signals:
+      1. Probe FILIP loss at drop_layer on ALL 196 patches (before dropping):
+         - Trains W_p_probe, W_t_probe, and backbone blocks 0..drop_layer-1
+         - "Make text-relevant patches stand out in FILIP space"
+         - ALL patches receive gradient — not just kept ones
+      2. Final FILIP loss on K selected patches after upper-block processing:
+         - Trains W_p_final, W_t_final, and upper backbone blocks
+         - "Kept patches remain aligned with text after further processing"
+
+    Gradient to drop decision (via STE):
+      contrastive_loss → CLS → upper blocks → kept patches → STE
+        → FILIP scores → W_p_probe → intermediate patch feats → blocks 0..drop_layer-1
+
+    Both signals push the backbone to produce features where text-relevant
+    patches naturally score high — the scoring criterion and the training
+    objective are jointly optimised.
+    """
+
+    def __init__(self, cfg):
+        super().__init__()
+        self.backbone = BiomedCLIPBackbone(
+            model_name=cfg['model']['vision_backbone'],
+            device=cfg['training']['device']
+        )
+        self.embed_dim = 768
+        self.proj_dim  = 512
+
+        self.drop_layer = cfg['model'].get('drop_layer', 6)
+
+        k_ratio = cfg['model'].get('k_ratio', 0.5)
+        self._current_k_ratio = k_ratio
+
+        # Learnable projections for FILIP scoring at drop_layer (768 → 512).
+        # Intermediate ViT features live in a different subspace than final
+        # features, so these are kept separate from patch_proj / token_proj.
+        self.probe_patch_proj = nn.Linear(self.embed_dim, self.proj_dim)
+        self.probe_token_proj = nn.Linear(self.embed_dim, self.proj_dim)
+
+        # Optional final FILIP loss on K selected patches after upper blocks.
+        # Separate projections because upper-block features differ from drop_layer.
+        self.use_filip_final = cfg['model'].get('use_filip_final', True)
+        if self.use_filip_final:
+            self.patch_proj = nn.Linear(self.embed_dim, self.proj_dim)
+            self.token_proj = nn.Linear(self.embed_dim, self.proj_dim)
+
+        self.logit_scale = self.backbone.clip_model.logit_scale
+
+    # ─────────────────────── helpers ────────────────────────────────────────
+
+    def set_k_ratio(self, ratio):
+        """Update k_ratio for annealing (called by trainer)."""
+        self._current_k_ratio = ratio
+
+    def get_k(self, n_patches):
+        return max(1, int(n_patches * self._current_k_ratio))
+
+    def _project_embedding(self, embedding):
+        visual_model = self.backbone.clip_model.visual
+        if hasattr(visual_model, 'proj') and visual_model.proj is not None:
+            return embedding @ visual_model.proj.to(embedding.dtype)
+        elif hasattr(visual_model, 'head') and visual_model.head is not None:
+            return visual_model.head(embedding)
+        else:
+            raise AttributeError("Cannot project 768->512. Check model architecture.")
+
+    def _compute_filip_scores(self, patch_feats_768, token_feats_768, attn_mask):
+        """
+        Per-patch FILIP importance: score_i = max_{l: valid} cos(W_p_probe*p_i, W_t_probe*t_l)
+
+        Args:
+            patch_feats_768: (B, 196, 768) intermediate patch features at drop_layer
+            token_feats_768: (B, L,   768) BERT token features (raw hidden states)
+            attn_mask:       (B, L)        1 = real token, 0 = padding
+
+        Returns:
+            scores: (B, 196)  per-patch FILIP scores in [-1, 1]
+        """
+        pf = F.normalize(self.probe_patch_proj(patch_feats_768), dim=-1)  # (B, 196, 512)
+        tf = F.normalize(self.probe_token_proj(token_feats_768), dim=-1)  # (B, L,   512)
+
+        sim = torch.bmm(pf, tf.transpose(1, 2))        # (B, 196, L)
+
+        # Mask padding so they cannot inflate the max
+        pad = (attn_mask == 0).unsqueeze(1)             # (B, 1, L)
+        sim = sim.masked_fill(pad, -1e9)
+
+        return sim.max(dim=-1).values                   # (B, 196)
+
+    # ─────────────────────── forward helpers ────────────────────────────────
+
+    def _forward_with_filip_drop(self, images, token_feats, attn_mask):
+        """
+        Layer-by-layer ViT forward with text-conditioned FILIP patch dropping.
+
+        Phase 1: All 197 tokens (CLS + 196 patches) through blocks 0..drop_layer-1.
+        Score:   FILIP max-cosine scores via probe projections W_p_probe / W_t_probe.
+        Drop:    Top-K patches kept; rest discarded. Sequence → K+1 tokens.
+        Phase 2: CLS + K selected patches through blocks drop_layer..11.
+
+        STE trick (training): TopKStraightThrough multiplied into patch features
+        before gathering so the scorer receives gradients from the upper losses.
+
+        Returns:
+            features:          (B, K+1, D) final normed ViT features
+            topk_idx_sorted:   (B, K)      kept patch positions (original indices)
+            filip_scores:      (B, 196)    FILIP scores at drop_layer (for logging)
+            probe_patch_feats: (B, 196, D) intermediate patch features (for probe loss)
+        """
+        vit_trunk = self.backbone.clip_model.visual.trunk
+
+        x = vit_trunk.patch_embed(images)
+        x = vit_trunk._pos_embed(x)
+        x = vit_trunk.patch_drop(x)
+        x = vit_trunk.norm_pre(x)
+
+        # Phase 1: full sequence through first drop_layer blocks
+        for i in range(self.drop_layer):
+            x = vit_trunk.blocks[i](x)
+
+        # Extract intermediate patch features and clone to isolate from phase 2
+        patch_feats = x[:, 1:, :].clone()                          # (B, 196, D)
+
+        # Text-conditioned FILIP scoring
+        filip_scores = self._compute_filip_scores(patch_feats, token_feats, attn_mask)
+
+        N, D = patch_feats.shape[1], patch_feats.shape[2]
+        k = self.get_k(N)
+
+        if self.training:
+            # STE: forward = binary TopK mask, backward = identity gradient
+            # This propagates contrastive gradients back through FILIP scores
+            # → probe_patch_proj → patch_feats → ViT blocks 0..drop_layer-1
+            mask_ste = TopKStraightThrough.apply(filip_scores, k)   # (B, N)
+            patch_feats_for_select = patch_feats * mask_ste.unsqueeze(-1)
+        else:
+            patch_feats_for_select = patch_feats
+
+        # Top-K indices sorted for attention stability in phase 2
+        _, topk_idx = torch.topk(filip_scores, k, dim=1)
+        topk_idx_sorted = topk_idx.sort(dim=1).values               # (B, K)
+
+        # Gather K selected patches
+        selected = patch_feats_for_select.gather(
+            1, topk_idx_sorted.unsqueeze(-1).expand(-1, -1, D)
+        )
+
+        # Reduced sequence: CLS token + K selected patches
+        x = torch.cat([x[:, :1, :], selected], dim=1)              # (B, K+1, D)
+
+        # Phase 2: remaining blocks on reduced sequence
+        for i in range(self.drop_layer, len(vit_trunk.blocks)):
+            x = vit_trunk.blocks[i](x)
+
+        x = vit_trunk.norm(x)
+
+        return x, topk_idx_sorted, filip_scores, patch_feats
+
+    def get_intermediate_patch_scores(self, images, text):
+        """
+        Compute text-conditioned FILIP scores at drop_layer on all 196 patches.
+        Used by deletion/insertion test and grounding visualisation.
+        Runs only Phase 1 of the ViT (no dropping, no upper blocks).
+        """
+        token_feats, attn_mask = self.backbone.encode_text_tokens(text)
+
+        vit_trunk = self.backbone.clip_model.visual.trunk
+        x = vit_trunk.patch_embed(images)
+        x = vit_trunk._pos_embed(x)
+        x = vit_trunk.patch_drop(x)
+        x = vit_trunk.norm_pre(x)
+
+        for i in range(self.drop_layer):
+            x = vit_trunk.blocks[i](x)
+
+        patch_feats = x[:, 1:, :]
+        return self._compute_filip_scores(patch_feats, token_feats, attn_mask)
+
+    # ─────────────────────── main forward ───────────────────────────────────
+
+    def forward(self, images, text):
+        # Text encoding (needed before drop for FILIP scoring)
+        token_feats, attn_mask = self.backbone.encode_text_tokens(text)
+
+        # ViT forward with text-conditioned FILIP drop
+        vit_features, topk_indices, filip_scores, probe_patch_feats = \
+            self._forward_with_filip_drop(images, token_feats, attn_mask)
+
+        # Image embedding from CLS of reduced sequence
+        cls_token = vit_features[:, 0, :]
+        img_emb = self._project_embedding(cls_token)
+        img_emb = F.normalize(img_emb, p=2, dim=-1)
+
+        # Text global embedding (pooled 512-d, normalised)
+        txt_emb = F.normalize(self.backbone.encode_text(text), dim=-1)
+
+        # Build local_features list for trainer's mid-fusion FILIP path:
+        #   [0] Probe FILIP at drop_layer on ALL 196 patches — key training signal.
+        #       Backprops directly into probe_patch_proj and ViT blocks 0..drop_layer-1.
+        #   [1] Final FILIP on K selected patches (after upper-block processing).
+        local_features = []
+
+        pf_probe = F.normalize(self.probe_patch_proj(probe_patch_feats), dim=-1)
+        tf_probe = F.normalize(self.probe_token_proj(token_feats), dim=-1)
+        local_features.append((pf_probe, tf_probe, attn_mask))
+
+        if self.use_filip_final:
+            selected_feats = vit_features[:, 1:, :]                 # (B, K, D)
+            pf_final = F.normalize(self.patch_proj(selected_feats), dim=-1)
+            tf_final = F.normalize(self.token_proj(token_feats), dim=-1)
+            local_features.append((pf_final, tf_final, attn_mask))
+
+        # Return filip_scores as importance_logits for trainer logging,
+        # deletion/insertion dispatch, and grounding visualisation.
+        return img_emb, txt_emb, filip_scores, local_features, None
+
+    @torch.no_grad()
+    def encode_independent(self, images, text):
+        """
+        Evaluation encoding — uses the SAME FILIP-drop forward as training.
+        No train/inference mismatch: CLS is computed on the same K dropped patches.
+        """
+        token_feats, attn_mask = self.backbone.encode_text_tokens(text)
+        vit_features, _, _, _ = self._forward_with_filip_drop(images, token_feats, attn_mask)
+
+        cls_token = vit_features[:, 0, :]
+        img_emb = self._project_embedding(cls_token)
+        img_emb = F.normalize(img_emb, p=2, dim=-1)
+
+        txt_emb = F.normalize(self.backbone.encode_text(text), dim=-1)
+
+        return img_emb, txt_emb

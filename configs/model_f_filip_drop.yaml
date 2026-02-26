@@ -1,0 +1,77 @@
+experiment_name: "model_f_filip_drop"
+
+data:
+  json_path: "/workspace/mimic_master_official_split.jsonl"
+  image_root: "/datasets/MIMIC-CXR/files"
+  batch_size: 48
+  num_workers: 4
+  image_size: 224
+  text_sections: "findings_impression"
+
+model:
+  vision_backbone: "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
+  text_backbone: "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
+
+  # Model F: Text-conditioned FILIP-scored intra-ViT patch dropping.
+  # Patches are ranked at drop_layer by max token-patch cosine similarity
+  # (probe projections W_p_probe / W_t_probe), so the drop decision is
+  # query-specific rather than globally biased like Model E's MLP scorer.
+  use_filip_drop: true
+
+  # Drop point: layer 6 of 12 — midpoint, balances scoring quality vs bottleneck strength.
+  # Earlier → stronger bottleneck but weaker features for scoring.
+  # Later   → richer features but less information actually removed.
+  drop_layer: 6
+
+  # Final ratio: keep 98/196 patches (50%).
+  # Annealed from 75% → 50% over first 5000 steps to stabilise early training.
+  k_ratio: 0.5
+  k_ratio_start: 0.75
+  k_ratio_anneal_steps: 5000
+
+  # FILIP losses: two entries in the local_features list returned by ModelF.
+  #   [0] = probe FILIP at drop_layer on ALL 196 patches (before drop)
+  #         — key signal: trains backbone blocks 0..drop_layer-1 and probe projections
+  #   [1] = final FILIP on K selected patches after upper-block processing
+  #         — reinforces that kept patches remain text-aligned after further processing
+  use_filip_final: true
+  mid_fusion_loss_weights: [0.3, 0.3]
+  mid_fusion_warmup_steps: 500   # Let backbone warm up before FILIP losses activate
+
+  # Sparsity weight: 0.0 — TopK guarantees exact sparsity, no additional push needed.
+  # The probe FILIP loss already encourages peaked score distributions.
+  sparsity_weight: 0.0
+
+  # Single contrastive loss on the reduced-sequence CLS token.
+  contrastive_mask_weight: 1.0
+  contrastive_full_weight: 1.0   # Unused (img_emb_full=None for ModelF)
+
+training:
+  staged_training: true
+  warmup_epochs: 1
+  warmup_lr: 1.0e-4
+
+  early_stopping_metric: "combined"
+
+  combined_weights:
+    recall: 0.7
+    auc: 0.3
+
+  eval_auc_every: 1
+
+  epochs: 40
+  lr: 1.0e-5
+  weight_decay: 0.02
+  warmup_steps: 1000
+  early_stopping_patience: 6
+  print_freq: 50
+  device: "cuda"
+  use_amp: true
+  gradient_accumulation_steps: 4
+  freeze_backbone: false
+  llrd_factor: 0.85
+
+wandb:
+  enable: true
+  project: "Thesis-PatchIB"
+  run_name: "model-f-filip-drop-k50"

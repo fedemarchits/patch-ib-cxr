@@ -50,6 +50,13 @@ def get_patch_scores(model, images, text):
         out = model.mask_head(patch_feats)
         scores = out[1]   # index 1 = importance_logits for both TopK and STE heads
 
+    # ── Model F: text-conditioned FILIP scorer at intermediate ViT layer ──
+    elif hasattr(model, 'probe_patch_proj') and hasattr(model, 'drop_layer'):
+        # Use intermediate features (not post-ViT) — that's where the drop happens.
+        # patch_feats above is post-ViT (used for the deletion/insertion curves).
+        # Scores come from drop_layer features projected via probe projections.
+        scores = model.get_intermediate_patch_scores(images, text)  # (B, 196)
+
     # ── Model E: lightweight scorer on intermediate ViT features ──
     elif hasattr(model, 'scorer') and hasattr(model, 'drop_layer'):
         vit_trunk = model.backbone.clip_model.visual.trunk

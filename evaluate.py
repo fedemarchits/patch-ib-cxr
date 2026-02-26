@@ -6,7 +6,7 @@ import json
 from datetime import datetime
 
 # Absolute imports (run from project root)
-from models.full_model import ModelABaseline, ModelE
+from models.full_model import ModelABaseline, ModelE, ModelF
 from data.dataset import create_dataloaders
 from engine.evaluator import Evaluator
 from engine.visualizer import (
@@ -176,7 +176,10 @@ if __name__ == "__main__":
         print("[WandB] wandb not installed. Skipping upload.")
 
     # 2. Load Model
-    if cfg.get('model', {}).get('use_mid_drop', False):
+    if cfg.get('model', {}).get('use_filip_drop', False):
+        model = ModelF(cfg)
+        print("Instantiated ModelF (text-conditioned FILIP-scored intra-ViT drop)")
+    elif cfg.get('model', {}).get('use_mid_drop', False):
         model = ModelE(cfg)
         print("Instantiated ModelE (intra-ViT patch dropping)")
     else:

@@ -947,7 +947,10 @@ def visualize_grounding_on_annotations(
 
             # ── Extract per-patch importance scores ────────────────────────
             if importance_logits is not None:
-                # Models C / D / E: direct scorer output
+                # Models C / D / E: direct MLP scorer output
+                # Model F: text-conditioned FILIP scores at drop_layer
+                #   (returned as importance_logits from ModelF.forward — already
+                #    phrase-specific max token-patch cosine similarity values)
                 scores = importance_logits[0].cpu().float()          # (196,)
             elif has_filip_mf and local_features is not None and len(local_features) > 0:
                 # Model B|2 / C|2 / D — last mid-fusion layer FILIP features

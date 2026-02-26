@@ -79,6 +79,9 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
                 model.mask_head.set_k_ratio(current_k_ratio)
             elif hasattr(model, 'scorer') and hasattr(model.scorer, 'set_k_ratio'):
                 model.scorer.set_k_ratio(current_k_ratio)
+            elif hasattr(model, 'set_k_ratio'):
+                # Model F: k_ratio lives directly on the model
+                model.set_k_ratio(current_k_ratio)
 
         with torch.amp.autocast(device_type=device, enabled=use_amp):
             # Model returns 5 values: img_emb (masked if use_masking), txt_emb, logits, local_features, img_emb_full
