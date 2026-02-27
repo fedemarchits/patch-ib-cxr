@@ -36,6 +36,12 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
     k_ratio_end = criterion.get('k_ratio_end', None)
     k_ratio_anneal_steps = criterion.get('k_ratio_anneal_steps', 0)
 
+    # Model G: 2-stage k_ratio annealing
+    k_ratio_1_start = criterion.get('k_ratio_1_start', None)
+    k_ratio_1_end   = criterion.get('k_ratio_1_end', None)
+    k_ratio_2_start = criterion.get('k_ratio_2_start', None)
+    k_ratio_2_end   = criterion.get('k_ratio_2_end', None)
+
     # Gumbel temperature annealing (Model C with Gumbel-Sigmoid)
     gumbel_tau_start = criterion.get('gumbel_tau_start', None)
     gumbel_tau_end = criterion.get('gumbel_tau_end', 0.1)
@@ -85,6 +91,12 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device, epoch, scal
             elif hasattr(model, 'set_k_ratio'):
                 # Model F: k_ratio lives directly on the model
                 model.set_k_ratio(current_k_ratio)
+
+        # Model G: 2-stage k_ratio annealing
+        if k_ratio_1_start is not None and hasattr(model, 'set_k_ratio_1'):
+            progress = min(1.0, global_step / k_ratio_anneal_steps) if k_ratio_anneal_steps > 0 else 1.0
+            model.set_k_ratio_1(k_ratio_1_start + (k_ratio_1_end - k_ratio_1_start) * progress)
+            model.set_k_ratio_2(k_ratio_2_start + (k_ratio_2_end - k_ratio_2_start) * progress)
 
         with torch.amp.autocast(device_type=device, enabled=use_amp):
             # Model returns 5 values: img_emb (masked if use_masking), txt_emb, logits, local_features, img_emb_full
