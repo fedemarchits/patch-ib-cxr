@@ -3,7 +3,7 @@ experiment_name: "model_f_layer9_drop"
 data:
   json_path: "/workspace/mimic_master_official_split.jsonl"
   image_root: "/datasets/MIMIC-CXR/files"
-  batch_size: 48
+  batch_size: 32
   num_workers: 4
   image_size: 224
   text_sections: "findings_impression"
