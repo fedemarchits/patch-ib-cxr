@@ -1423,3 +1423,243 @@ class ModelG(nn.Module):
         img_emb = F.normalize(self._project_embedding(cls_token), p=2, dim=-1)
         txt_emb = F.normalize(self.backbone.encode_text(text), dim=-1)
         return img_emb, txt_emb
+
+
+class ModelH(nn.Module):
+    """
+    Model H: Soft Intra-ViT FILIP Feature Modulation.
+
+    Instead of hard dropping (Model F/G), patches at drop_layer are
+    multiplicatively gated by sigmoid(T × filip_score_i):
+
+        patch_feat_i ← patch_feat_i × sigmoid(T × filip_score_i)
+
+    All 196 patches continue through the upper blocks, but text-irrelevant
+    patches have their features suppressed while text-relevant patches pass
+    through more strongly. This is fully differentiable — no STE required.
+
+    The CLS token naturally attends more to amplified (text-relevant) patches
+    through upper-block self-attention, creating soft attentional focus without
+    the discontinuity of hard sequence reduction.
+
+    The sigmoid gate map is directly the importance visualisation: each patch's
+    weight ∈ [0, 1] is monotone in its FILIP score, so the heatmap is
+    interpretable without any post-hoc normalisation.
+
+    Two complementary training signals:
+      1. Probe FILIP loss at drop_layer on ALL 196 patches (before gating):
+         - Trains probe_patch_proj, probe_token_proj, and blocks 0..drop_layer-1
+         - "Make text-relevant patches score high in FILIP space"
+         - ALL patches receive gradient — not just amplified ones
+      2. Final FILIP loss on gated patches after upper-block processing:
+         - Trains patch_proj, token_proj, and upper backbone blocks
+         - "Gated patches remain aligned with text after further processing"
+
+    Sparsity loss: (sigmoid(T*scores).mean() − target_ratio)²
+    Controls mean gate activation level (fraction of patches effectively "on").
+
+    Comparison with Model F (TopK STE) and Model F-Adaptive:
+      Model F:          binary mask, sequence reduction, gradient via STE
+      ModelFAdaptive:   binary mask, full seq, masked mean-pool, gradient via STE
+      ModelH:           soft sigmoid gate, full sequence, fully differentiable
+
+    Primary embedding: text-independent full CLS (all 12 blocks, no gating).
+    Auxiliary embedding: gated CLS × contrastive_full_weight (trains scorer).
+    encode_independent() returns full CLS — same evaluation protocol as F/G.
+    """
+
+    def __init__(self, cfg):
+        super().__init__()
+        self.backbone = BiomedCLIPBackbone(
+            model_name=cfg['model']['vision_backbone'],
+            device=cfg['training']['device']
+        )
+        self.embed_dim = 768
+        self.proj_dim  = 512
+
+        self.drop_layer = cfg['model'].get('drop_layer', 6)
+
+        # Temperature for sigmoid gating: scales FILIP scores ∈ [-1,1] → [-T, T].
+        # Larger T → more binary gating (closer to hard TopK behavior).
+        # Smaller T → softer, more uniform gating.
+        # T=5: sigmoid(+1)=0.993, sigmoid(-1)=0.007 → nearly binary
+        # T=1: sigmoid(+1)=0.731, sigmoid(-1)=0.269 → soft
+        self.drop_temperature = cfg['model'].get('drop_temperature', 5.0)
+
+        # Probe projections for FILIP scoring at drop_layer (768 → 512).
+        # Intermediate ViT features live in a different subspace than final
+        # features, so these are kept separate from patch_proj / token_proj.
+        self.probe_patch_proj = nn.Linear(self.embed_dim, self.proj_dim)
+        self.probe_token_proj = nn.Linear(self.embed_dim, self.proj_dim)
+
+        # Optional final FILIP loss on gated patches after upper blocks.
+        # Separate projections because upper-block features differ from drop_layer.
+        self.use_filip_final = cfg['model'].get('use_filip_final', True)
+        if self.use_filip_final:
+            self.patch_proj = nn.Linear(self.embed_dim, self.proj_dim)
+            self.token_proj = nn.Linear(self.embed_dim, self.proj_dim)
+
+        self.logit_scale = self.backbone.clip_model.logit_scale
+
+    # ─────────────────────── helpers ────────────────────────────────────────
+
+    def _project_embedding(self, embedding):
+        visual_model = self.backbone.clip_model.visual
+        if hasattr(visual_model, 'proj') and visual_model.proj is not None:
+            return embedding @ visual_model.proj.to(embedding.dtype)
+        elif hasattr(visual_model, 'head') and visual_model.head is not None:
+            return visual_model.head(embedding)
+        else:
+            raise AttributeError("Cannot project 768->512. Check model architecture.")
+
+    def _compute_filip_scores(self, patch_feats_768, token_feats_768, attn_mask):
+        """
+        Per-patch FILIP importance: score_i = max_{l: valid} cos(probe_patch_proj(p_i), probe_token_proj(t_l))
+
+        Args:
+            patch_feats_768: (B, 196, 768) intermediate patch features at drop_layer
+            token_feats_768: (B, L,   768) BERT token features
+            attn_mask:       (B, L)        1 = real token, 0 = padding
+
+        Returns:
+            scores: (B, 196) per-patch FILIP scores in [-1, 1]
+        """
+        pf = F.normalize(self.probe_patch_proj(patch_feats_768), dim=-1)  # (B, 196, 512)
+        tf = F.normalize(self.probe_token_proj(token_feats_768), dim=-1)  # (B, L,   512)
+        sim = torch.bmm(pf, tf.transpose(1, 2))                           # (B, 196, L)
+        pad = (attn_mask == 0).unsqueeze(1)                                # (B, 1, L)
+        sim = sim.masked_fill(pad, torch.finfo(sim.dtype).min)
+        return sim.max(dim=-1).values                                      # (B, 196)
+
+    def _forward_full_vit_with_probe(self, images):
+        """
+        Full ViT forward (all 12 blocks, all 196 patches) with a snapshot of
+        the intermediate state at drop_layer.
+
+        Returns:
+            final_features: (B, 197, D)  post-ViT normed features (CLS + patches)
+            probe_feats:    (B, 196, D)  patch features at drop_layer (for FILIP scoring)
+            state_at_drop:  (B, 197, D)  pre-norm state at drop_layer
+                            (starting point for the gated Phase 2 path)
+        """
+        vit_trunk = self.backbone.clip_model.visual.trunk
+        x = vit_trunk.patch_embed(images)
+        x = vit_trunk._pos_embed(x)
+        x = vit_trunk.patch_drop(x)
+        x = vit_trunk.norm_pre(x)
+
+        probe_feats   = None
+        state_at_drop = None
+        for i, block in enumerate(vit_trunk.blocks):
+            x = block(x)
+            if i == self.drop_layer - 1:
+                probe_feats   = x[:, 1:, :].clone()   # (B, 196, D)
+                state_at_drop = x.clone()              # (B, 197, D)
+
+        x = vit_trunk.norm(x)
+        return x, probe_feats, state_at_drop
+
+    def get_intermediate_patch_scores(self, images, text):
+        """
+        Text-conditioned FILIP scores at drop_layer on all 196 patches.
+        Used by deletion/insertion test and grounding visualisation.
+        Returns unscaled FILIP scores (before temperature multiplication).
+        """
+        token_feats, attn_mask = self.backbone.encode_text_tokens(text)
+
+        vit_trunk = self.backbone.clip_model.visual.trunk
+        x = vit_trunk.patch_embed(images)
+        x = vit_trunk._pos_embed(x)
+        x = vit_trunk.patch_drop(x)
+        x = vit_trunk.norm_pre(x)
+
+        for i in range(self.drop_layer):
+            x = vit_trunk.blocks[i](x)
+
+        patch_feats = x[:, 1:, :]
+        return self._compute_filip_scores(patch_feats, token_feats, attn_mask)
+
+    # ─────────────────────── main forward ───────────────────────────────────
+
+    def forward(self, images, text):
+        # Text encoding (needed for FILIP scoring at drop_layer)
+        token_feats, attn_mask = self.backbone.encode_text_tokens(text)
+
+        # ── Full ViT forward + probe snapshot ─────────────────────────────
+        # Runs all 12 blocks on all 196 patches (no gating).
+        # Also captures state at drop_layer to branch off the gated Phase 2 path.
+        vit_full, probe_feats, state_at_drop = \
+            self._forward_full_vit_with_probe(images)
+
+        # Primary image embedding — text-independent full CLS.
+        # This is the MAIN contrastive signal and what encode_independent()
+        # returns for retrieval evaluation.
+        full_cls = vit_full[:, 0, :]
+        img_emb = F.normalize(self._project_embedding(full_cls), p=2, dim=-1)
+
+        # Text global embedding
+        txt_emb = F.normalize(self.backbone.encode_text(text), dim=-1)
+
+        # ── Compute FILIP scores and soft sigmoid gates ────────────────────
+        filip_scores  = self._compute_filip_scores(probe_feats, token_feats, attn_mask)
+        scaled_scores = self.drop_temperature * filip_scores    # (B, 196)  for gating + sparsity
+        gates         = torch.sigmoid(scaled_scores)            # (B, 196) ∈ [0, 1]
+
+        # ── Gated Phase 2 (auxiliary text-conditioned path) ───────────────
+        # Applies multiplicative gates to patch features at drop_layer, then
+        # runs the upper ViT blocks on the full-length gated sequence.
+        # The CLS token naturally attends more to amplified (gate≈1) patches.
+        cls_at_drop     = state_at_drop[:, :1, :]                # (B, 1, D)
+        patches_at_drop = state_at_drop[:, 1:, :]                # (B, 196, D)
+        gated_patches   = patches_at_drop * gates.unsqueeze(-1)  # (B, 196, D)
+        x_gated = torch.cat([cls_at_drop, gated_patches], dim=1) # (B, 197, D)
+
+        vit_trunk = self.backbone.clip_model.visual.trunk
+        for i in range(self.drop_layer, len(vit_trunk.blocks)):
+            x_gated = vit_trunk.blocks[i](x_gated)
+        x_gated = vit_trunk.norm(x_gated)
+
+        gated_cls = x_gated[:, 0, :]
+        gated_img_emb = F.normalize(self._project_embedding(gated_cls), p=2, dim=-1)
+
+        # ── Local FILIP losses ─────────────────────────────────────────────
+        local_features = []
+
+        #   [0] Probe FILIP on ALL 196 patches at drop_layer (before gating).
+        #       Direct gradient to probe_patch_proj and blocks 0..drop_layer-1.
+        pf_probe = F.normalize(self.probe_patch_proj(probe_feats), dim=-1)
+        tf_probe = F.normalize(self.probe_token_proj(token_feats), dim=-1)
+        local_features.append((pf_probe, tf_probe, attn_mask))
+
+        #   [1] Final FILIP on gated patches after upper-block processing.
+        if self.use_filip_final:
+            gated_patch_feats = x_gated[:, 1:, :]               # (B, 196, D) — gated
+            pf_final = F.normalize(self.patch_proj(gated_patch_feats), dim=-1)
+            tf_final = F.normalize(self.token_proj(token_feats), dim=-1)
+            local_features.append((pf_final, tf_final, attn_mask))
+
+        # scaled_scores returned as importance_logits for SparsityLoss:
+        #   (sigmoid(scaled_scores).mean() − target_ratio)²
+        # img_emb_full = (gated_img_emb, txt_emb):
+        #   Trainer adds InfoNCE(gated_img_emb, txt_emb) × contrastive_full_weight
+        #   as an auxiliary loss that trains the FILIP scorer end-to-end via
+        #   clean sigmoid gradients (no STE approximation).
+        #   Retrieval metrics use encode_independent() (full CLS), not this tuple.
+        return img_emb, txt_emb, scaled_scores, local_features, (gated_img_emb, txt_emb)
+
+    @torch.no_grad()
+    def encode_independent(self, images, text):
+        """
+        Evaluation encoding — text-independent full ViT forward (all 196 patches).
+
+        The gated path used during training produces a text-conditioned image
+        embedding (CLS attends to patches gated for the paired text), which
+        violates retrieval evaluation independence and would inflate R@K.
+        Using the full 12-block forward gives a genuinely text-independent image
+        embedding suitable for cross-modal retrieval benchmarks.
+        """
+        vit_full, _, _ = self._forward_full_vit_with_probe(images)
+        cls_token = vit_full[:, 0, :]
+        img_emb = F.normalize(self._project_embedding(cls_token), p=2, dim=-1)
+        txt_emb = F.normalize(self.backbone.encode_text(text), dim=-1)
+        return img_emb, txt_emb

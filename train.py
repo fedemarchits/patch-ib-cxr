@@ -7,7 +7,7 @@ import math
 from torch.amp import GradScaler
 from torch.optim.lr_scheduler import LambdaLR
 
-from models.full_model import ModelABaseline, ModelE, ModelF, ModelFAdaptive, ModelG
+from models.full_model import ModelABaseline, ModelE, ModelF, ModelFAdaptive, ModelG, ModelH
 from models.losses import ContrastiveLoss, SparsityLoss, LocalAlignmentLoss, FILIPContrastiveLoss, ConsistencyLoss
 from data.dataset import create_dataloaders
 from engine.trainer import train_one_epoch
@@ -94,7 +94,10 @@ def main():
         print(f"Data Loaded: {len(train_loader)} train batches, {len(val_loader)} val batches.")
 
         # 3. Model
-        if cfg['model'].get('use_gradual_drop', False):
+        if cfg['model'].get('use_soft_modulation', False):
+            model = ModelH(cfg).to(device)
+            print("Instantiated ModelH (soft FILIP feature gating, fully differentiable)")
+        elif cfg['model'].get('use_gradual_drop', False):
             model = ModelG(cfg).to(device)
             print("Instantiated ModelG (2-stage gradual FILIP drop)")
         elif cfg['model'].get('use_filip_adaptive', False):
@@ -264,6 +267,19 @@ def main():
             print(f"Model G k1 annealing: {criterions['k_ratio_1_start']:.2f} -> {criterions['k_ratio_1_end']:.2f}, "
                   f"k2 annealing: {criterions['k_ratio_2_start']:.2f} -> {criterions['k_ratio_2_end']:.2f} "
                   f"over {criterions['k_ratio_anneal_steps']} steps")
+
+        # Model H: soft FILIP sigmoid gating (fully differentiable, no STE)
+        if cfg['model'].get('use_soft_modulation', False):
+            filip_weights = cfg['model'].get('mid_fusion_loss_weights', [0.3, 0.3])
+            criterions['local_alignment'] = FILIPContrastiveLoss(weight_i2t=weight_i2t, weight_t2i=weight_t2i)
+            criterions['mid_fusion_loss_type'] = 'filip'
+            criterions['mid_fusion_loss_weights'] = filip_weights
+            criterions['mid_fusion_warmup_steps'] = cfg['model'].get('mid_fusion_warmup_steps', 500)
+            # Sparsity loss drives gates toward target_ratio: (sigmoid(T*scores).mean() - target_ratio)^2
+            criterions['sparsity_weight'] = cfg['model'].get('sparsity_weight', 2.0)
+            criterions['sparsity_warmup_steps'] = cfg['model'].get('sparsity_warmup_steps', 500)
+            print(f"Model H FILIP losses: probe + final weights = {filip_weights}")
+            print(f"Model H sparsity_weight={criterions['sparsity_weight']}, target_ratio={cfg['model'].get('k_ratio', 0.5)}")
 
         # Model E / F: k_ratio annealing for intra-ViT scorer / FILIP drop
         uses_intra_drop = (cfg['model'].get('use_mid_drop', False) or
