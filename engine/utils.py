@@ -73,4 +73,5 @@ class EarlyStopping:
         if epoch is not None:
             checkpoint['epoch'] = epoch
 
+        os.makedirs(os.path.dirname(os.path.abspath(self.checkpoint_path)), exist_ok=True)
         torch.save(checkpoint, self.checkpoint_path)
