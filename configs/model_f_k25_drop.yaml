@@ -1,0 +1,74 @@
+experiment_name: "model_f_k25_drop"
+
+data:
+  json_path: "/workspace/mimic_master_official_split.jsonl"
+  image_root: "/datasets/MIMIC-CXR/files"
+  batch_size: 48
+  num_workers: 4
+  image_size: 224
+  text_sections: "findings_impression"
+
+model:
+  vision_backbone: "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
+  text_backbone: "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
+
+  # Model F k=0.25: same FILIP-scored intra-ViT drop as F-layer6 (k=0.5)
+  # but retains only 49/196 patches (25%) in upper blocks.
+  # Ablation goal: test whether strong text-conditioned FILIP scoring can
+  # sustain retrieval and clustering quality under aggressive patch pruning,
+  # unlike the weak-FILIP D|3 run (k=0.25, FILIP [0.01,0.01,0.01]) that fell
+  # below baseline. Compute saving expected: ~28 GFLOPs vs 34.46 for F-layer6.
+  use_filip_drop: true
+
+  # Same sweet-spot drop layer as F (layer 6 of 12).
+  drop_layer: 6
+
+  # Final ratio: keep 49/196 patches (25%).
+  # Annealed from 75% → 25% over first 5000 steps.
+  # Wider annealing range gives the scorer time to learn discriminative scores
+  # before the selection becomes very aggressive.
+  k_ratio: 0.25
+  k_ratio_start: 0.75
+  k_ratio_anneal_steps: 5000
+
+  # Same FILIP loss structure as F-layer6.
+  #   [0] = probe FILIP at drop_layer on all 196 patches (before drop)
+  #   [1] = final FILIP on 49 kept patches after upper-block processing
+  use_filip_final: true
+  mid_fusion_loss_weights: [0.3, 0.3]
+  mid_fusion_warmup_steps: 500
+
+  sparsity_weight: 0.0
+
+  contrastive_mask_weight: 1.0
+  contrastive_full_weight: 0.5
+
+training:
+  staged_training: true
+  warmup_epochs: 1
+  warmup_lr: 1.0e-4
+
+  early_stopping_metric: "combined"
+
+  combined_weights:
+    recall: 0.7
+    auc: 0.3
+
+  eval_auc_every: 1
+
+  epochs: 40
+  lr: 1.0e-5
+  weight_decay: 0.02
+  warmup_steps: 1000
+  early_stopping_patience: 6
+  print_freq: 50
+  device: "cuda"
+  use_amp: true
+  gradient_accumulation_steps: 4
+  freeze_backbone: false
+  llrd_factor: 0.85
+
+wandb:
+  enable: true
+  project: "Thesis-PatchIB"
+  run_name: "model-f-filip-drop-k25"
