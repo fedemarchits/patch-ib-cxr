@@ -1,0 +1,73 @@
+experiment_name: "model_f_k75_drop"
+
+data:
+  json_path: "/workspace/mimic_master_official_split.jsonl"
+  image_root: "/datasets/MIMIC-CXR/files"
+  batch_size: 48
+  num_workers: 4
+  image_size: 224
+  text_sections: "findings_impression"
+
+model:
+  vision_backbone: "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
+  text_backbone: "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
+
+  # Model F k=0.75: same FILIP-scored intra-ViT drop as F-layer6 (k=0.5)
+  # but retains 147/196 patches (75%) — gentler pruning.
+  # Ablation goal: test whether lighter dropping recovers retrieval toward
+  # F-layer4 levels (18.43%) while preserving F-layer6's purity advantage (0.4645).
+  # F-layer6 k=0.5 trades ~0.2% retrieval for a large purity gain (+0.022 over A).
+  # k=0.75 should reduce that trade-off. GFLOPs expected ~36-37 (vs 34.46 for k=0.5).
+  use_filip_drop: true
+
+  # Same sweet-spot drop layer as F-layer6.
+  drop_layer: 6
+
+  # Final ratio: keep 147/196 patches (75%).
+  # Annealed from 100% → 75% over first 5000 steps.
+  # Gentle annealing since the target ratio is already conservative.
+  k_ratio: 0.75
+  k_ratio_start: 1.0
+  k_ratio_anneal_steps: 5000
+
+  # Same FILIP loss structure as F-layer6.
+  #   [0] = probe FILIP at drop_layer on all 196 patches (before drop)
+  #   [1] = final FILIP on 147 kept patches after upper-block processing
+  use_filip_final: true
+  mid_fusion_loss_weights: [0.3, 0.3]
+  mid_fusion_warmup_steps: 500
+
+  sparsity_weight: 0.0
+
+  contrastive_mask_weight: 1.0
+  contrastive_full_weight: 0.5
+
+training:
+  staged_training: true
+  warmup_epochs: 1
+  warmup_lr: 1.0e-4
+
+  early_stopping_metric: "combined"
+
+  combined_weights:
+    recall: 0.7
+    auc: 0.3
+
+  eval_auc_every: 1
+
+  epochs: 40
+  lr: 1.0e-5
+  weight_decay: 0.02
+  warmup_steps: 1000
+  early_stopping_patience: 6
+  print_freq: 50
+  device: "cuda"
+  use_amp: true
+  gradient_accumulation_steps: 4
+  freeze_backbone: false
+  llrd_factor: 0.85
+
+wandb:
+  enable: true
+  project: "Thesis-PatchIB"
+  run_name: "model-f-filip-drop-k75"
