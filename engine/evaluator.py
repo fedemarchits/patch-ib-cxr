@@ -189,9 +189,13 @@ class Evaluator:
         # Detect models that require independent encoding to avoid retrieval cheating:
         # - Mid-fusion models: cross-attention makes img/txt embeddings interdependent
         # - ModelF/ModelFAdaptive: FILIP scoring makes image embedding text-conditioned
+        # - ModelC (use_masking): forward() returns masked mean-pool, not full CLS.
+        #   All other models are evaluated on the full backbone CLS; for a consistent
+        #   comparison ModelC must also use encode_independent() (full CLS).
         use_independent = (
             (hasattr(self.model, 'use_mid_fusion') and self.model.use_mid_fusion) or
-            hasattr(self.model, 'probe_patch_proj')  # ModelF / ModelFAdaptive
+            hasattr(self.model, 'probe_patch_proj') or  # ModelF / ModelFAdaptive
+            (hasattr(self.model, 'use_masking') and self.model.use_masking)  # ModelC
         )
         if use_independent:
             print("\n[Retrieval] Using independent encoding (text-independent image embedding)")
@@ -259,8 +263,12 @@ class Evaluator:
         """Extract L2-normalized image embeddings and labels from the test set."""
         test_embs = []
         test_labels = []
-        # ModelF/ModelFAdaptive: text-conditioned img_emb inflates clustering metrics
-        needs_independent = hasattr(self.model, 'probe_patch_proj')
+        # ModelF/ModelFAdaptive: text-conditioned img_emb inflates clustering metrics.
+        # ModelC: masked mean-pool is not comparable to full CLS used by all other models.
+        needs_independent = (
+            hasattr(self.model, 'probe_patch_proj') or
+            (hasattr(self.model, 'use_masking') and self.model.use_masking)
+        )
 
         with torch.no_grad():
             for batch in tqdm(self.test_loader, desc="Test embeddings"):

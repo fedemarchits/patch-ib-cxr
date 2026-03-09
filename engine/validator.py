@@ -58,9 +58,14 @@ def compute_validation_auc(model, train_loader, val_loader, device, use_amp=Fals
         train_loader_with_labels = train_loader
         val_loader_with_labels = val_loader
 
-    # Detect ModelF/ModelFAdaptive: their img_emb is text-conditioned (FILIP scoring).
-    # Use text-independent encode_independent() for AUC to avoid data leakage.
-    needs_independent_eval = hasattr(model, 'probe_patch_proj')
+    # Detect models whose forward() does not return a full-backbone CLS embedding:
+    # - ModelF/ModelFAdaptive: img_emb is text-conditioned (FILIP scoring) → data leakage
+    # - ModelC (use_masking): img_emb is masked mean-pool, not comparable to full CLS
+    # All other models return full CLS from forward(); encode_independent() gives the same.
+    needs_independent_eval = (
+        hasattr(model, 'probe_patch_proj') or
+        (hasattr(model, 'use_masking') and model.use_masking)
+    )
 
     # Extract training embeddings and labels
     train_embs = []
@@ -237,10 +242,14 @@ def validate(model, dataloader, criterions, device, use_amp, compute_retrieval=F
     total_loss = 0
     num_batches = 0
 
-    # ModelF/ModelFAdaptive produce text-conditioned image embeddings.
-    # Their img_emb from forward() depends on the paired text via FILIP scoring,
-    # which would inflate retrieval metrics. Use encode_independent() instead.
-    needs_independent_eval = hasattr(model, 'probe_patch_proj')
+    # Models whose forward() does not return a full-backbone CLS embedding:
+    # - ModelF/ModelFAdaptive: img_emb is text-conditioned via FILIP scoring
+    # - ModelC (use_masking): img_emb is masked mean-pool, not full CLS
+    # Use encode_independent() for a consistent, text-independent embedding.
+    needs_independent_eval = (
+        hasattr(model, 'probe_patch_proj') or
+        (hasattr(model, 'use_masking') and model.use_masking)
+    )
 
     contrastive_criterion = criterions['contrastive']
     local_criterion = criterions.get('local_alignment', None)
