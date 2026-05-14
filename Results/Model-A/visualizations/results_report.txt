@@ -1,0 +1,42 @@
+============================================================
+EVALUATION RESULTS REPORT
+============================================================
+Generated: 2026-02-13 16:22:40
+
+--- Retrieval Metrics (Zero-Shot) ---
+
+Image-to-Text (I2T):
+  R@1:   18.17%
+  R@5:   45.27%
+  R@10:  59.09%
+
+Text-to-Image (T2I):
+  R@1:   18.75%
+  R@5:   44.91%
+  R@10:  58.72%
+
+--- Clustering Metrics (K-Means, Cosine, Single-Label Test Samples) ---
+
+NMI:      0.1418
+ARI:      0.0444
+Purity:   0.4428
+Samples:  691
+Classes:  14
+
+Per-Class Sample Distribution:
+  Atelectasis                   : 26 samples
+  Cardiomegaly                  : 58 samples
+  Consolidation                 : 10 samples
+  Edema                         : 48 samples
+  Enlarged Cardiomediastinum    : 6 samples
+  Fracture                      : 16 samples
+  Lung Lesion                   : 9 samples
+  Lung Opacity                  : 119 samples
+  No Finding                    : 283 samples
+  Pleural Effusion              : 56 samples
+  Pleural Other                 : 6 samples
+  Pneumonia                     : 34 samples
+  Pneumothorax                  : 7 samples
+  Support Devices               : 13 samples
+
+============================================================

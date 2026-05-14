@@ -1,0 +1,22 @@
+============================================================
+EFFICIENCY REPORT
+============================================================
+Generated: 2026-03-09 11:23:05
+
+--- Performance Metrics ---
+Throughput:           72.12 img/sec
+Avg Step Time:        61.82 ms/batch
+Latency per Image:    1.93 ms/img
+
+--- Memory Usage ---
+Peak VRAM:            3657.73 MB
+
+--- Computational Complexity ---
+GFLOPs:               30.28
+Total Parameters:     198,151,299
+Trainable Parameters: 198,151,299
+
+--- Test Configuration ---
+Batch Size:           32
+Batches Tested:       50
+============================================================

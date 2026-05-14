@@ -1,0 +1,72 @@
+experiment_name: "model_h_layer4"
+
+data:
+  json_path: "/workspace/mimic_master_official_split.jsonl"
+  image_root: "/datasets/MIMIC-CXR/files"
+  batch_size: 24
+  num_workers: 4
+  image_size: 224
+  text_sections: "findings_impression"
+
+model:
+  vision_backbone: "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
+  text_backbone: "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
+
+  # Model H-layer4: same soft sigmoid gating as H but applied at layer 4.
+  #
+  # Motivation from grounding results:
+  #   H (layer 6): best grounding (CNT=0.732) but worst retrieval in F/G/H (16.96%)
+  #   F (layer 4): best retrieval of all F variants (18.43% ≈ Model A)
+  # Hypothesis: moving soft gating to layer 4 gives 8 upper blocks to propagate
+  # the gating signal into the primary CLS, potentially recovering retrieval
+  # while keeping H's grounding advantage over hard-dropping F models.
+  use_soft_modulation: true
+
+  # Key change vs H: gate at layer 4 instead of layer 6.
+  drop_layer: 4
+
+  # Same temperature as H: sigmoid(±5) ≈ near-binary gating.
+  drop_temperature: 5.0
+
+  # Same target sparsity as H and F: keep ~50% of patches active.
+  k_ratio: 0.5
+
+  use_filip_final: true
+  mid_fusion_loss_weights: [0.3, 0.3]
+  mid_fusion_warmup_steps: 500
+
+  sparsity_weight: 2.0
+  sparsity_warmup_steps: 500
+
+  contrastive_mask_weight: 1.0
+  contrastive_full_weight: 0.5
+
+training:
+  staged_training: true
+  warmup_epochs: 1
+  warmup_lr: 1.0e-4
+
+  early_stopping_metric: "combined"
+
+  combined_weights:
+    recall: 0.7
+    auc: 0.3
+
+  eval_auc_every: 1
+
+  epochs: 40
+  lr: 1.0e-5
+  weight_decay: 0.02
+  warmup_steps: 1000
+  early_stopping_patience: 6
+  print_freq: 50
+  device: "cuda"
+  use_amp: true
+  gradient_accumulation_steps: 8
+  freeze_backbone: false
+  llrd_factor: 0.85
+
+wandb:
+  enable: true
+  project: "Thesis-PatchIB"
+  run_name: "model-h-layer4"

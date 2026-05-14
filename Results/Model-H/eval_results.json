@@ -1,0 +1,21 @@
+{
+  "grounding/filip_layer_6/Atelectasis/cnt": 0.8333333333333334,
+  "grounding/filip_layer_6/Atelectasis/miou": 0.30570293561509465,
+  "grounding/filip_layer_6/Cardiomegaly/cnt": 0.9333333333333333,
+  "grounding/filip_layer_6/Cardiomegaly/miou": 0.3162828826609341,
+  "grounding/filip_layer_6/Consolidation/cnt": 0.8571428571428571,
+  "grounding/filip_layer_6/Consolidation/miou": 0.3110683282270407,
+  "grounding/filip_layer_6/Edema/cnt": 1.0,
+  "grounding/filip_layer_6/Edema/miou": 0.3883907886201464,
+  "grounding/filip_layer_6/Lung Opacity/cnt": 0.7142857142857143,
+  "grounding/filip_layer_6/Lung Opacity/miou": 0.15205989814073823,
+  "grounding/filip_layer_6/Pleural Effusion/cnt": 0.8571428571428571,
+  "grounding/filip_layer_6/Pleural Effusion/miou": 0.2738588931779476,
+  "grounding/filip_layer_6/Pneumonia/cnt": 0.8125,
+  "grounding/filip_layer_6/Pneumonia/miou": 0.20634370009653644,
+  "grounding/filip_layer_6/Pneumothorax/cnt": 0.2,
+  "grounding/filip_layer_6/Pneumothorax/miou": 0.1051440788257064,
+  "grounding/filip_layer_6/overall_cnt": 0.7319587628865979,
+  "grounding/filip_layer_6/overall_miou": 0.24164492642142243,
+  "grounding_eval_timestamp": "2026-03-10T11:48:01.595305"
+}

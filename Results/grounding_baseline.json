@@ -1,0 +1,21 @@
+{
+  "grounding/biomedclip_baseline/Atelectasis/cnt": 0.3333333333333333,
+  "grounding/biomedclip_baseline/Atelectasis/miou": 0.1553913432425331,
+  "grounding/biomedclip_baseline/Cardiomegaly/cnt": 0.16666666666666666,
+  "grounding/biomedclip_baseline/Cardiomegaly/miou": 0.1113205770169608,
+  "grounding/biomedclip_baseline/Consolidation/cnt": 0.2857142857142857,
+  "grounding/biomedclip_baseline/Consolidation/miou": 0.1546478843138787,
+  "grounding/biomedclip_baseline/Edema/cnt": 0.0,
+  "grounding/biomedclip_baseline/Edema/miou": 0.09757954545454545,
+  "grounding/biomedclip_baseline/Lung Opacity/cnt": 0.0,
+  "grounding/biomedclip_baseline/Lung Opacity/miou": 0.0357166082400577,
+  "grounding/biomedclip_baseline/Pleural Effusion/cnt": 0.0,
+  "grounding/biomedclip_baseline/Pleural Effusion/miou": 0.11072291947364442,
+  "grounding/biomedclip_baseline/Pneumonia/cnt": 0.0625,
+  "grounding/biomedclip_baseline/Pneumonia/miou": 0.07176824764019665,
+  "grounding/biomedclip_baseline/Pneumothorax/cnt": 0.0,
+  "grounding/biomedclip_baseline/Pneumothorax/miou": 0.02791596142721998,
+  "grounding/biomedclip_baseline/overall_cnt": 0.10309278350515463,
+  "grounding/biomedclip_baseline/overall_miou": 0.08738666625528677,
+  "timestamp": "2026-03-09T18:57:52.068899"
+}

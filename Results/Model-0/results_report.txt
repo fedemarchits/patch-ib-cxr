@@ -1,0 +1,39 @@
+============================================================
+EVALUATION RESULTS REPORT
+============================================================
+Generated: 2026-02-11 07:03:35
+
+--- Retrieval Metrics (Zero-Shot) ---
+
+Image-to-Text (I2T):
+  R@1:   0.47%
+  R@5:   2.05%
+  R@10:  4.36%
+
+Text-to-Image (T2I):
+  R@1:   0.63%
+  R@5:   2.10%
+  R@10:  3.36%
+
+--- Classification Metrics (Linear Probe) ---
+
+Mean AUC:  0.7187
+Mean AP:   0.2990
+
+Per-Class AUC:
+  Atelectasis                   : 0.7086
+  Cardiomegaly                  : 0.7247
+  Consolidation                 : 0.7033
+  Edema                         : 0.8001
+  Enlarged Cardiomediastinum    : 0.7126
+  Fracture                      : 0.6125
+  Lung Lesion                   : 0.6644
+  Lung Opacity                  : 0.6708
+  No Finding                    : 0.7602
+  Pleural Effusion              : 0.8102
+  Pleural Other                 : 0.7050
+  Pneumonia                     : 0.6454
+  Pneumothorax                  : 0.7183
+  Support Devices               : 0.8253
+
+============================================================

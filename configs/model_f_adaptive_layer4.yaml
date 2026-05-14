@@ -1,0 +1,81 @@
+experiment_name: "model_f_adaptive_layer4"
+
+data:
+  json_path: "/workspace/mimic_master_official_split.jsonl"
+  image_root: "/datasets/MIMIC-CXR/files"
+  batch_size: 48
+  num_workers: 4
+  image_size: 224
+  text_sections: "findings_impression"
+
+model:
+  vision_backbone: "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
+  text_backbone: "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
+
+  # Model F-adaptive at layer 4: combines the two best single-metric winners.
+  #   F-layer4 (fixed TopK): best retrieval in F family (18.43%) — early dropping
+  #     leaves 8 upper blocks to refine kept patches.
+  #   F-adaptive (layer 6): best faithfulness (Del/Ins gap +0.453) — variable K
+  #     forces a meaningful zero-crossing in the FILIP score distribution.
+  # Question: can good retrieval and strong faithfulness coexist in one model?
+  #
+  # Risk: layer-4 FILIP scores are shallower than layer-6. The adaptive threshold
+  # at score=0 may be less discriminative, potentially keeping too many patches.
+  # The sparsity loss (target 50%) compensates by penalising over-keeping.
+  use_filip_adaptive: true
+
+  # Key change vs F-adaptive (layer 6): drop at layer 4.
+  # 8 upper blocks (5-12) refine the adaptively-kept patches → strong retrieval signal.
+  drop_layer: 4
+
+  # Temperature for STE binarisation. Same as F-adaptive layer-6.
+  # sigmoid(±5) ≈ near-binary. If layer-4 scores are too flat and nothing gets
+  # dropped, consider lowering to 3.0 to soften the threshold.
+  drop_temperature: 5.0
+
+  use_gumbel: false
+
+  # Sparsity loss: anchors average keep-ratio to ~50% even if layer-4 scores
+  # are flat. This is more important here than at layer 6 because shallow
+  # FILIP scores have less natural spread around zero.
+  mask_ratio: 0.5
+  sparsity_weight: 5.0
+  sparsity_warmup_steps: 500
+
+  # Probe FILIP loss on all 196 patches at drop_layer=4 (before adaptive drop).
+  # Single entry since F-adaptive uses one probe loss (not two like fixed-K F).
+  mid_fusion_loss_weights: [0.3]
+  mid_fusion_warmup_steps: 500
+
+  contrastive_mask_weight: 1.0
+  contrastive_full_weight: 0.5
+
+training:
+  staged_training: true
+  warmup_epochs: 1
+  warmup_lr: 1.0e-4
+
+  early_stopping_metric: "combined"
+
+  combined_weights:
+    recall: 0.7
+    auc: 0.3
+
+  eval_auc_every: 1
+
+  epochs: 40
+  lr: 1.0e-5
+  weight_decay: 0.02
+  warmup_steps: 1000
+  early_stopping_patience: 6
+  print_freq: 50
+  device: "cuda"
+  use_amp: true
+  gradient_accumulation_steps: 4
+  freeze_backbone: false
+  llrd_factor: 0.85
+
+wandb:
+  enable: true
+  project: "Thesis-PatchIB"
+  run_name: "model-f-adaptive-layer4"

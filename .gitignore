@@ -40,8 +40,15 @@ wandb/
 .wandb/
 
 
-# Thesis pdf
-thesisPdf/
+# Thesis pdf (keep referenced figures, drop the heavy LaTeX build)
+thesisPdf/*
+!thesisPdf/images/
+thesisPdf/images/*.pdf
+thesisPdf/images/*.svg
+thesisPdf/images/.DS_Store
+
+# Raw MIMIC images — license/PHI, must not be pushed
+Results/ms_cxr_images/
 
 # Claude help
-CLAUDE.md
+CLAUDE.mdLocal_Alignment_for_Medical_Vision_Language_Pre_training.pdf
