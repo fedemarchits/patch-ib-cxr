@@ -1,6 +1,34 @@
-# Patch-IB-CXR: Vision-Language Alignment on Chest X-Rays
+<h1 align="center">🫁 Patch-IB-CXR</h1>
+<h3 align="center">Patch-level Information Bottleneck for Vision-Language Alignment on Chest X-Rays</h3>
 
-This repository implements a Patch-based Information Bottleneck (IB) approach for medical image-text retrieval using the MIMIC-CXR dataset. This project explores staged training and local-global alignment to improve clinical feature representation.
+<p align="center">
+  <em>From global CLIP contrastive learning to text-conditioned patch dropping — building interpretable, sparse, and grounded radiology representations on MIMIC-CXR.</em>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/PyTorch-2.10-EE4C2C?logo=pytorch&logoColor=white" />
+  <img src="https://img.shields.io/badge/CUDA-12.2-76B900?logo=nvidia&logoColor=white" />
+  <img src="https://img.shields.io/badge/Backbone-BiomedCLIP-1f77b4" />
+  <img src="https://img.shields.io/badge/Dataset-MIMIC--CXR-7f3fbf" />
+  <img src="https://img.shields.io/badge/Grounding-MS--CXR-2ca02c" />
+  <img src="https://img.shields.io/badge/License-MIT-yellow" />
+</p>
+
+<p align="center">
+  <img src="thesisPdf/images/FinalArchitecture.png" alt="Patch-IB-CXR full architecture" width="92%"/>
+  <br>
+  <em>Figure — Patch-IB-CXR end-to-end: BiomedCLIP backbone, FILIP probes for fine-grained text-conditioned scoring, an intra-ViT patch-dropping gate, and the global + local + sparsity objectives that shape the latent space.</em>
+</p>
+
+---
+
+## ✨ TL;DR
+
+- **Backbone**: BiomedCLIP (ViT-B/16 + PubMedBERT), full-text MIMIC-CXR (213k frontal images, official patient-disjoint split).
+- **Idea**: replace dense patch attention with a **text-conditioned bottleneck** — keep only the patches a radiology report actually needs.
+- **Mechanisms studied**: global InfoNCE, local FILIP/cosine alignment, mid-fusion cross-attention, STE / Top-K / Gumbel masks, intra-ViT patch dropping, soft sigmoid gating.
+- **Best trade-offs**: **Model F** (FILIP-drop @ layer 6) — best Purity + strong NMI on ~50% patches; **Model F-adaptive** — best faithfulness (Del 0.032 ↓ / Ins 0.785 ↑).
+- **Side-products**: phrase grounding on MS-CXR, faithfulness (deletion/insertion) curves, full ablation against ConVIRT / GLoRIA / BioViL / MGCA / MAIRA-2.
 
 ---
 
@@ -13,6 +41,21 @@ This repository implements a Patch-based Information Bottleneck (IB) approach fo
 - [🏆 Benchmarking & SOTA Comparison](#-benchmarking--sota-comparison)
 - [🧬 Foundation Model](#-foundation-model)
 - [🧠 Models](#-models)
+- [🖼️ Visual Mechanisms Gallery](#-visual-mechanisms-gallery)
+- [🩻 Phrase Grounding on MS-CXR](#-phrase-grounding-on-ms-cxr)
+- [📉 Faithfulness — Deletion & Insertion](#-faithfulness--deletion--insertion)
+- [🌌 Embedding Space — UMAP Gallery](#-embedding-space--umap-gallery)
+- [🏁 Final Leaderboard](#-final-leaderboard)
+
+---
+
+## 🧭 What the patches look like
+
+<p align="center">
+  <img src="thesisPdf/images/cxr_patches_zoom.png" alt="ViT-B/16 patchification on a chest X-ray" width="85%"/>
+  <br>
+  <em>Figure — A 224×224 frontal chest X-ray is tokenized into 14×14 = <strong>196 patches</strong>. Patch-IB asks: <em>which subset of these 196 carries the report's signal?</em></em>
+</p>
 
 ---
 
@@ -160,10 +203,23 @@ Our model extends the standard CLIP framework with specialized heads and alignme
 - **Goal**: Identifying the **Information Bottleneck (IB)**—the minimum subset of patches required to retain the model's discriminative power
 - **Optimization**: Controlled by a sparsity constraint ($\mathcal{L}_{sparse}$) and a consistency loss ($\mathcal{L}_{cons}$) to ensure the masked image behaves similarly to the full image
 
+<p align="center">
+  <img src="thesisPdf/images/IB.png" alt="Information Bottleneck principle" width="55%"/>
+  <br>
+  <em>Figure — The Information Bottleneck principle behind Patch-IB: compress the input <code>X</code> through a minimal sufficient code <code>Z</code> that still predicts <code>Y</code>.</em>
+</p>
+
 #### 3. Local Alignment Head (Grounding)
 
 - **Cross-Attention**: Uses text tokens as **queries** and image patches as **keys/values**.
 - **Loss**: **Local Loss** ($\mathcal{L}_{local}$) minimizes the distance between text-aligned patch summaries and their corresponding word embeddings, forcing clinical grounding.
+
+<table align="center">
+  <tr>
+    <td align="center"><img src="thesisPdf/images/FILIP_fig1.png" width="100%"/><br><em>FILIP: fine-grained token-patch similarity</em></td>
+    <td align="center"><img src="thesisPdf/images/crossattn_vs_filip.png" width="100%"/><br><em>Cross-attention vs FILIP scoring</em></td>
+  </tr>
+</table>
 
 ---
 
@@ -221,6 +277,12 @@ BiomedCLIP was pretrained using a standard **Contrastive Language-Image Pretrain
 #### 🔗 Model Source
 
 - **HuggingFace Hub**: [microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224](https://huggingface.co/microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224)
+
+<p align="center">
+  <img src="thesisPdf/images/CLIP_structure.png" alt="CLIP dual-stream backbone" width="70%"/>
+  <br>
+  <em>Figure — The dual-stream contrastive backbone we inherit from BiomedCLIP and extend with patch-level heads.</em>
+</p>
 
 #### Data Configuration
 
@@ -437,18 +499,14 @@ When `llrd_factor` is set to `0.85`, the learning rates are distributed across t
 
 #### Efficiency
 
-<table>
-    <tr>
-        <td style="text-align: center;">
-            <img src="imgs/model-a-staged-training_gpu_memory.png" alt="Model A Training & Validation Loss" style="width: 100%;"/>
-            <br>Figure: Model A Training and Validation Loss over Epochs_
-        </td>
-        <td style="text-align: center;">
-            <img src="imgs/model-a-staged-training_gpu_utilization.png" alt="Model A Combined Metric" style="width: 100%;"/>
-            <br>Figure: Model A Combined Metric (Recall + AUC) over Epochs_
-        </td>
-    </tr>
+<table align="center">
+  <tr>
+    <td align="center"><img src="imgs/model-a-staged-training_gpu_memory.png" width="100%"/><br><em>GPU memory across staged training</em></td>
+    <td align="center"><img src="imgs/model-a-staged-training_gpu_utilization.png" width="100%"/><br><em>GPU utilization (RTX 3090)</em></td>
+    <td align="center"><img src="imgs/model-a-staged-training_temperature.png" width="100%"/><br><em>Learned contrastive temperature</em></td>
+  </tr>
 </table>
+
 ---
 
 ### Model B: + Local Alignment
@@ -553,3 +611,287 @@ In order to keep track of the influence of the two losses during training I've k
 | **B (Local Align)** |      **67.55**       |     **62.52**      |     **1.95**     |  **3640.07**   | **30.24** |    100%     |
 | **C (Patch-IB)**    |        58.45         |       71.85        |       2.25       |    3855.20     |   27.17   |    ~80%     |
 | **D (Top-K)**       |      **92.15**       |     **40.12**      |     **1.25**     |  **3120.45**   | **21.40** | ~**12.7%**  |
+
+---
+
+### Model E: Text-agnostic PatchScorerMLP (Post-ViT)
+
+A first patch-selection ablation: a tiny MLP scores every patch from its ViT feature alone — no text conditioning. Layer-6 read-out, K = 118 patches kept.
+
+<p align="center">
+  <img src="thesisPdf/images/Post-ViT.png" alt="Post-ViT scorer architecture" width="80%"/>
+  <br>
+  <em>Figure — Post-ViT scoring: patches go through the full 12-block ViT, then a lightweight head selects a subset for downstream losses.</em>
+</p>
+
+<p align="center">
+  <img src="thesisPdf/images/postvit_variants.png" alt="Post-ViT variants" width="78%"/>
+  <br>
+  <em>Figure — Post-ViT variants explored (MLP scorer, FILIP-conditioned scorer, hard vs soft selection).</em>
+</p>
+
+---
+
+### Model F: FILIP-Drop inside the ViT
+
+Model F injects the patch bottleneck **inside** the ViT: FILIP-scored patches at an intermediate layer (4, 6 or 9) are dropped before the remaining transformer blocks. This is the configuration that delivers the best Purity / Faithfulness trade-off.
+
+<p align="center">
+  <img src="thesisPdf/images/IntraVitArch.png" alt="Intra-ViT FILIP drop architecture" width="88%"/>
+  <br>
+  <em>Figure — Intra-ViT FILIP drop: text-conditioned similarities at layer ℓ produce a hard top-K gate, the surviving patches feed the remaining blocks.</em>
+</p>
+
+<p align="center">
+  <img src="thesisPdf/images/intravit_variants.png" alt="Intra-ViT variants" width="80%"/>
+  <br>
+  <em>Figure — Drop-layer ablation: shallow (4) vs mid (6) vs deep (9) injection. Layer 6 hits the best Purity/NMI sweet-spot.</em>
+</p>
+
+<p align="center">
+  <img src="thesisPdf/images/ste_vs_topk.png" alt="STE vs TopK" width="62%"/>
+  <br>
+  <em>Figure — Mask discreteness: STE-thresholded mask (left) vs differentiable Top-K with straight-through gradient (right).</em>
+</p>
+
+#### Qualitative Patch Selection — Model F (drop @ layer 6)
+
+<table align="center">
+  <tr>
+    <td align="center"><img src="Results/Model-F/Model-F-6/visualizations/mask_sample_0.png" width="100%"/></td>
+    <td align="center"><img src="Results/Model-F/Model-F-6/visualizations/mask_sample_3.png" width="100%"/></td>
+    <td align="center"><img src="Results/Model-F/Model-F-6/visualizations/mask_sample_5.png" width="100%"/></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="Results/Model-F/Model-F-6/visualizations/mask_sample_7.png" width="100%"/></td>
+    <td align="center"><img src="Results/Model-F/Model-F-6/visualizations/mask_sample_8.png" width="100%"/></td>
+    <td align="center"><img src="Results/Model-F/Model-F-6/visualizations/mask_sample_9.png" width="100%"/></td>
+  </tr>
+</table>
+
+<p align="center"><em>Text-conditioned FILIP-drop mask: kept patches concentrate on lungs / mediastinum / support devices — the regions referenced by the report.</em></p>
+
+---
+
+### Model F-adaptive: STE-threshold mask
+
+Same FILIP probe, but instead of a fixed K we apply a learnable threshold via STE — the model picks **how many** patches to keep per image. Yields the strongest faithfulness numbers (Del ↓ 0.032 / Ins ↑ 0.785).
+
+<table align="center">
+  <tr>
+    <td align="center"><img src="Results/Model-F/Model-F-adaptive/visualizations/mask_sample_2.png" width="100%"/></td>
+    <td align="center"><img src="Results/Model-F/Model-F-adaptive/visualizations/mask_sample_4.png" width="100%"/></td>
+    <td align="center"><img src="Results/Model-F/Model-F-adaptive/visualizations/mask_sample_6.png" width="100%"/></td>
+  </tr>
+</table>
+
+---
+
+### Model H: Soft Sigmoid Gating
+
+Differentiable alternative to hard dropping: every patch survives but is scaled by a soft sigmoid gate. Best NMI, slightly worse faithfulness than F-adaptive.
+
+<p align="center">
+  <img src="thesisPdf/images/softgate_viz.png" alt="Soft sigmoid gating" width="62%"/>
+  <br>
+  <em>Figure — Soft sigmoid gate: continuous (0,1) weights replace the hard top-K, keeping gradients smooth everywhere.</em>
+</p>
+
+---
+
+## 🖼️ Visual Mechanisms Gallery
+
+### Patch attention — Model C (STE mask + cosine local)
+
+<table align="center">
+  <tr>
+    <td align="center"><img src="Results/Model-C/Model-C1/visualizations/attention_sample_0.png" width="100%"/></td>
+    <td align="center"><img src="Results/Model-C/Model-C1/visualizations/attention_sample_3.png" width="100%"/></td>
+    <td align="center"><img src="Results/Model-C/Model-C1/visualizations/attention_sample_5.png" width="100%"/></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="Results/Model-C/Model-C1/visualizations/attention_sample_7.png" width="100%"/></td>
+    <td align="center"><img src="Results/Model-C/Model-C1/visualizations/attention_sample_8.png" width="100%"/></td>
+    <td align="center"><img src="Results/Model-C/Model-C1/visualizations/attention_sample_9.png" width="100%"/></td>
+  </tr>
+</table>
+
+### Mid-fusion FILIP — Model B
+
+Cross-attention probes at layers 4 + 8 + 12. The per-token text-to-visual maps reveal which patches each report word attends to.
+
+<table align="center">
+  <tr>
+    <td align="center"><img src="Results/Model-B/Model-B-filip-mid/visualizations/filip_alignment_sample_0.png" width="100%"/></td>
+    <td align="center"><img src="Results/Model-B/Model-B-filip-mid/visualizations/filip_alignment_sample_2.png" width="100%"/></td>
+    <td align="center"><img src="Results/Model-B/Model-B-filip-mid/visualizations/filip_alignment_sample_4.png" width="100%"/></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="Results/Model-B/Model-B-filip-mid/visualizations/midfusion_t2v_sample_1.png" width="100%"/></td>
+    <td align="center"><img src="Results/Model-B/Model-B-filip-mid/visualizations/midfusion_t2v_sample_3.png" width="100%"/></td>
+    <td align="center"><img src="Results/Model-B/Model-B-filip-mid/visualizations/midfusion_t2v_sample_6.png" width="100%"/></td>
+  </tr>
+</table>
+
+### Top-K dropping — Model D
+
+Aggressive sparsity (k ≈ 0.25–0.40) — the model survives with ~12% of patches.
+
+<table align="center">
+  <tr>
+    <td align="center"><img src="Results/Model-D/Model-D-topk/visualizations/midfusion_t2v_sample_0.png" width="100%"/></td>
+    <td align="center"><img src="Results/Model-D/Model-D-topk/visualizations/midfusion_t2v_sample_3.png" width="100%"/></td>
+    <td align="center"><img src="Results/Model-D/Model-D-topk/visualizations/midfusion_t2v_sample_5.png" width="100%"/></td>
+  </tr>
+</table>
+
+---
+
+## 🩻 Phrase Grounding on MS-CXR
+
+MS-CXR provides expert bounding boxes for clinical phrases. We use the same FILIP probes — no extra supervision — to localize the phrase referenced by the report.
+
+<table align="center">
+  <tr>
+    <td align="center"><img src="thesisPdf/images/PneunomiaFILIPDrop.png" width="100%"/><br><em>Model F — FILIP-drop @ layer 6</em></td>
+    <td align="center"><img src="thesisPdf/images/PneunomiaAdaptive.png" width="100%"/><br><em>Model F-adaptive — STE threshold</em></td>
+  </tr>
+</table>
+
+<p align="center"><em>Phrase: "right lower lobe pneumonia". Both variants concentrate mass on the right lung base; the adaptive variant produces a tighter footprint.</em></p>
+
+---
+
+## 📉 Faithfulness — Deletion & Insertion
+
+For each model we sort patches by importance, then progressively delete (most-important first → metric should drop fast) or insert them (least-important first → metric should rise fast). Lower **Del AUC** and higher **Ins AUC** mean the salience map is faithful to the model.
+
+<p align="center">
+  <img src="thesisPdf/images/del_ins_curve.png" alt="Deletion / Insertion curves" width="65%"/>
+  <br>
+  <em>Figure — Deletion (↓ better) and Insertion (↑ better) curves comparing baseline attribution, B-FILIP-mid, and Model F-adaptive.</em>
+</p>
+
+| Model                 |  Del AUC ↓   |  Ins AUC ↑   |  Gap (Ins − Del) |
+| :-------------------- | :----------: | :----------: | :--------------: |
+| B (FILIP mid-fusion)  |    0.368     |    0.463     |      +0.095      |
+| F (layer 6)           |    0.205     |    0.595     |      +0.390      |
+| F-layer9              |    0.183     |    0.678     |      +0.495      |
+| **F-adaptive**        |  **0.032**   |  **0.785**   |    **+0.753**    |
+| H (soft gate)         |    0.299     |    0.681     |      +0.382      |
+
+---
+
+## 🌌 Embedding Space — UMAP Gallery
+
+UMAP projections of the test set CLS embeddings, coloured by the dominant CheXpert label. Tighter, more cleanly separated clusters → better semantic structure (also reflected in NMI / Purity).
+
+<table align="center">
+  <tr>
+    <td align="center"><img src="Results/Model-A/visualizations/umap_embeddings.png" width="100%"/><br><em>Model A — global contrastive only</em></td>
+    <td align="center"><img src="Results/Model-B/Model-B-postViT/visualizations/umap_embeddings.png" width="100%"/><br><em>Model B — post-ViT FILIP</em></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="Results/Model-C/Model-C1/visualizations/umap_embeddings.png" width="100%"/><br><em>Model C — STE mask + cosine local</em></td>
+    <td align="center"><img src="Results/Model-F/Model-F-6/visualizations/umap_embeddings.png" width="100%"/><br><em>Model F — FILIP-drop @ layer 6</em></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="Results/Model-F/Model-F-adaptive/visualizations/umap_embeddings.png" width="100%"/><br><em>Model F-adaptive</em></td>
+    <td align="center"><img src="Results/Model-F/Model-F-9/visualizations/umap_embeddings.png" width="100%"/><br><em>Model F — drop @ layer 9</em></td>
+  </tr>
+</table>
+
+### Pairwise cluster agreement (Model F)
+
+<table align="center">
+  <tr>
+    <td align="center"><img src="Results/Model-F/Model-F-6/visualizations/pairwise_nmi_heatmap.png" width="100%"/><br><em>NMI</em></td>
+    <td align="center"><img src="Results/Model-F/Model-F-6/visualizations/pairwise_ari_heatmap.png" width="100%"/><br><em>ARI</em></td>
+    <td align="center"><img src="Results/Model-F/Model-F-6/visualizations/pairwise_purity_heatmap.png" width="100%"/><br><em>Purity</em></td>
+  </tr>
+</table>
+
+---
+
+## 🏁 Final Leaderboard
+
+| Model                     | I2T R@1    | T2I R@1    | R@10 (avg) |    NMI     |   Purity   | Del ↓ | Ins ↑ | Patch Usage |
+| :------------------------ | :--------: | :--------: | :--------: | :--------: | :--------: | :---: | :---: | :---------: |
+| A — Baseline              |   17.37    |   17.82    |    56.9    |   0.1318   |   0.4228   |   —   |   —   |    100%     |
+| B — cosine mid-fusion     | **18.70**  | **19.12**  |    58.2    |   0.1320   |   0.4313   |   —   |   —   |    100%     |
+| B — FILIP mid-fusion      |   18.28    | **19.12**  |    58.6    |   0.1495   |   0.4501   | 0.368 | 0.463 |    100%     |
+| B — multiscale probes     |   18.33    |   18.43    |    57.9    | **0.1536** |   0.4501   | 0.452 | 0.472 |    100%     |
+| C — STE + cosine          |   14.23    |   13.39    |    49.2    |   0.1443   |   0.4486   | 0.482 | 0.416 |     50%     |
+| D — Top-K (k = 0.4)       |   18.33    |   18.33    |    58.5    |   0.1184   |   0.4342   | 0.424 | 0.423 |    ~40%     |
+| E — PatchScorerMLP        |   15.18    |   14.65    |    50.3    |   0.1437   |   0.4269   | 0.458 | 0.470 |     60%     |
+| F-layer4                  |   18.43    |   18.70    |    57.1    |   0.1474   |   0.4414   | 0.316 | 0.496 |     50%     |
+| **F (layer 6)**           |   17.96    |   18.17    |    58.0    |   0.1523   | **0.4645** | 0.205 | 0.595 |     50%     |
+| F-layer9                  |   17.49    |   17.96    |    57.6    | **0.1542** |   0.4486   | 0.183 | 0.678 |     50%     |
+| **F-adaptive**            |   17.86    |   17.28    |    57.2    |   0.1435   |   0.4428   | **0.032** | **0.785** |   adaptive  |
+| G — staged 2-step drop    |   17.38    |   17.02    |    57.4    |   0.1460   |   0.4327   | 0.253 | 0.622 |     50%     |
+| **H — soft gate**         |   16.96    |   16.96    |    55.6    | **0.1540** |   0.4530   | 0.299 | 0.681 |  soft 100%  |
+
+<sub>Full per-config breakdown and notes in <a href="RESULTS.md"><code>RESULTS.md</code></a>.</sub>
+
+<p align="center">
+  <img src="thesisPdf/images/results_table.png" alt="Final results table" width="92%"/>
+</p>
+
+---
+
+## 📂 Repository Layout
+
+```
+patch-ib-cxr/
+├── configs/                 # YAML configs for every Model A→H variant
+├── data/                    # MIMIC-CXR + MS-CXR loaders, master JSONL builder
+├── engine/                  # trainer, validator, evaluator (retrieval + AUC + faithfulness)
+├── models/
+│   └── full_model.py        # ModelABaseline, ModelE, ModelF, ModelFAdaptive, ModelH
+├── ms-cxr/                  # MS-CXR phrase-grounding subset + scripts
+├── thesisPdf/               # LaTeX thesis + all architecture figures (images/)
+├── Results/                 # per-model checkpoints, visualizations, eval JSON
+├── imgs/                    # training curves (TensorBoard exports)
+├── train.py · eval.sh       # entry points
+├── evaluate_grounding_only.py
+└── RESULTS.md               # detailed per-variant analysis
+```
+
+---
+
+## ▶️ Quick Start
+
+```bash
+# 1. Build the container (CUDA 12.2 + PyTorch 2.10)
+docker build -t patch_ib_img2:latest .
+
+# 2. Run a single model
+bash run_docker.sh
+python train.py --config configs/model_f_filip_drop.yaml
+
+# 3. Evaluate retrieval + AUC + faithfulness
+bash eval.sh logs/model_f_layer6/best_model.pt
+
+# 4. Phrase grounding on MS-CXR
+python evaluate_grounding_only.py --checkpoint logs/model_f_layer6/best_model.pt
+```
+
+---
+
+## 📜 Citation
+
+If you find this work useful, please cite the underlying thesis (`thesisPdf/main.pdf`) and the BiomedCLIP backbone:
+
+```bibtex
+@mastersthesis{marchi2026patchib,
+  author  = {Federico Marchi},
+  title   = {Patch-level Information Bottleneck for Vision-Language
+             Alignment on Chest X-Rays},
+  school  = {[Your University]},
+  year    = {2026}
+}
+```
+
+---
+
+<p align="center"><sub>Built on top of <a href="https://huggingface.co/microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224">BiomedCLIP</a> · MIMIC-CXR · MS-CXR.</sub></p>
